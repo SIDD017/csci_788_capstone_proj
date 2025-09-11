@@ -203,8 +203,6 @@ def process_args():
     return args
 
 def main():
-    # device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = "cpu"
 
     args = process_args()
 
@@ -235,28 +233,7 @@ def main():
     cv.imshow("Dense refined flow", disp)
     cv.imshow("I2 warped", I2_warp)
 
-    # from refine import refine_patch_affine
 
-    # thetas, flow_patch, I2_warp_patch, boxes = refine_patch_affine(
-    #     args.image1,     # HxW float32 [0,1]
-    #     args.image2,     # HxW float32 [0,1]
-    #     flow,            # LK init HxWx2
-    #     patch=64,        # try 16, 24, 32 depending on texture
-    #     stride=16,       # stride < patch for overlap and smoother blend
-    #     steps=1,
-    #     lr=0.05,
-    #     edge_beta=20.0,
-    #     eps=1e-3,
-    #     lambda_smooth=1e-3,  # 0 for no smoothing, >0 to reduce seams
-    #     device="cpu",
-    # )
-
-    # # visualize with your helper
-    # disp = visualize_flow_hsv(flow_patch)
-    # cv.imshow("Patch-affine refined flow", disp)
-    # cv.imshow("I2 warped (patch-affine)", I2_warp_patch)
-
-    # Save the optical flow as an HSV image
     display = visualize_flow_hsv(flow)
     gt_display = visualize_gt_flow_hsv(gt_flow)
     cv.imshow("Optical flow (custom)", display)
