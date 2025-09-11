@@ -1,7 +1,5 @@
 import struct
-from pathlib import Path
 import numpy as np
-from typing import Optional
 import cv2 as cv
 
 

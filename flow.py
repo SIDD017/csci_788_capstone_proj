@@ -2,14 +2,7 @@ import cv2 as cv
 import numpy as np
 import argparse
 from pathlib import Path
-from typing import Optional
-import torch
-import torch.nn.functional
 from ground_truth_flo import read_flo_file, visualize_gt_flow_hsv
-
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-device = "cpu"
-
 
 def visualize_flow_hsv(flow_uv, max_magnitude = None):
     nan_mask = np.any(np.isnan(flow_uv), axis=2)
@@ -172,10 +165,8 @@ def calculate_forward_reverse_flow(
 ):
     # Calculate the forward optical flow
     forward_flow = coarse_to_fine_optical_flow(image1, image2, levels, window_size, alpha)
-
     # Calculate the reverse optical flow
     reverse_flow = coarse_to_fine_optical_flow(image2, image1, levels, window_size, alpha)
-
     # Catch occlusion issues and other bad estimates by checking for places where forward and
     # reverse flow disagree
     is_bad_flow_estimate = np.linalg.norm(forward_flow + reverse_flow, axis=2) > goodness_threshold
@@ -203,6 +194,12 @@ def process_args():
         default=2.0,
     )
     args = parser.parse_args()
+
+    # Read the images
+    args.image1 = uint8_to_float32(cv.imread(str(args.image1), cv.IMREAD_GRAYSCALE))
+    args.image2 = uint8_to_float32(cv.imread(str(args.image2), cv.IMREAD_GRAYSCALE))
+
+    #TODO: Assert checks = shape, dims, types, etc
     return args
 
 def main():
@@ -210,11 +207,6 @@ def main():
     device = "cpu"
 
     args = process_args()
-    # Read the images
-    args.image1 = uint8_to_float32(cv.imread(str(args.image1), cv.IMREAD_GRAYSCALE))
-    args.image2 = uint8_to_float32(cv.imread(str(args.image2), cv.IMREAD_GRAYSCALE))
-
-    #TODO: Assert checks = shape, dims, types, etc
 
     flow = calculate_forward_reverse_flow(
         args.image1,
@@ -229,6 +221,40 @@ def main():
         gt_flow = read_flo_file(args.gtimage)
     except Exception as e:
         exit(1)
+
+
+    from refine import refine_dense_flow
+
+    flow_refined, I2_warp = refine_dense_flow(
+        args.image1, args.image2, flow,
+        # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
+        steps=10000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
+    )
+
+    disp = visualize_flow_hsv(flow_refined)
+    cv.imshow("Dense refined flow", disp)
+    cv.imshow("I2 warped", I2_warp)
+
+    # from refine import refine_patch_affine
+
+    # thetas, flow_patch, I2_warp_patch, boxes = refine_patch_affine(
+    #     args.image1,     # HxW float32 [0,1]
+    #     args.image2,     # HxW float32 [0,1]
+    #     flow,            # LK init HxWx2
+    #     patch=64,        # try 16, 24, 32 depending on texture
+    #     stride=16,       # stride < patch for overlap and smoother blend
+    #     steps=1,
+    #     lr=0.05,
+    #     edge_beta=20.0,
+    #     eps=1e-3,
+    #     lambda_smooth=1e-3,  # 0 for no smoothing, >0 to reduce seams
+    #     device="cpu",
+    # )
+
+    # # visualize with your helper
+    # disp = visualize_flow_hsv(flow_patch)
+    # cv.imshow("Patch-affine refined flow", disp)
+    # cv.imshow("I2 warped (patch-affine)", I2_warp_patch)
 
     # Save the optical flow as an HSV image
     display = visualize_flow_hsv(flow)
