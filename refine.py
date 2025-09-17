@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 def charbonnier_loss(x, eps=1e-3):
     return torch.sqrt(x*x + eps*eps)
@@ -10,24 +11,22 @@ def sobel_magnitude(t):
     ky = torch.tensor([[1,2,1],[0,0,0],[-1,-2,-1]], dtype=t.dtype, device=t.device).view(1,1,3,3)/8
     gx = F.conv2d(t, kx, padding=1)
     gy = F.conv2d(t, ky, padding=1)
-    # Adding small epsilon here to avoid dividing by zero in edge weighting
+    # TODO: Maybe add small epsilon here to avoid dividing by zero in edge weighting
     return torch.sqrt(gx*gx + gy*gy)
 
 def _warp_with_flow(I, flow):
-    """
-    I: 1x1xHxW
-    flow: HxWx2 (u,v) in pixels
-    returns I warped by reverse mapping using grid_sample
-    """
     B, C, H, W = I.shape
     dev, dt = I.device, I.dtype
     ys, xs = torch.meshgrid(torch.arange(H, device=dev),
                             torch.arange(W, device=dev), indexing="ij")
     xw = xs + flow[...,0]
     yw = ys + flow[...,1]
+    # Convert to [-1,1] range for grid_sample
     gx = (xw / (W - 1)) * 2 - 1
     gy = (yw / (H - 1)) * 2 - 1
+    # Make size (1,H,W,2), expected by grid_sample
     grid = torch.stack([gx, gy], -1).unsqueeze(0)
+    # TODO: Padding mode?
     return F.grid_sample(I, grid, align_corners=True, mode="bilinear", padding_mode="border")
 
 def refine_dense_flow(
@@ -48,7 +47,7 @@ def refine_dense_flow(
     w_edge = 1.0 / (1.0 + edge_beta * sobel_magnitude(I1))
     w_edge = w_edge.detach()
 
-    # init flow from LK
+    # convert nans to zeros in the initial flow form LK
     init = np.nan_to_num(init_flow_uv.astype(np.float32), nan=0.0)
     flow = torch.from_numpy(init).to(device)
     flow = flow.clone().requires_grad_(True)
@@ -63,8 +62,8 @@ def refine_dense_flow(
 
         # smoothness on flow with Charbonnier TV (forward differences)
         # flow: H x W x 2  (axis 0 = y/rows, axis 1 = x/cols)
-        dy = flow[1:, :, :] - flow[:-1, :, :]   # (H-1) x W x 2
-        dx = flow[:, 1:, :] - flow[:, :-1, :]   # H x (W-1) x 2
+        dy = torch.linalg.norm(flow[1:, :, :] - flow[:-1, :, :], dim=-1)   # (H-1) x W x 2
+        dx = torch.linalg.norm(flow[:, 1:, :] - flow[:, :-1, :], dim=-1)   # H x (W-1) x 2
         tv = charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()
 
         loss = data + lambda_smooth * tv
