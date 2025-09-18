@@ -123,9 +123,12 @@ def refine_dense_flow(
                     print(f"\nEPE to GT: {epe:.4f}")
                     epe_log.append(epe)
                     # Angular error (in radians)
-                    ang = torch.acos(torch.clamp(( (flow[...,0]+1)*(gp[...,0]+1) + (flow[...,1]+1)*(gp[...,1]+1) )/(
-                        torch.sqrt((flow[...,0]+1)**2 + (flow[...,1]+1)**2) * 
-                        torch.sqrt((gp[...,0]+1)**2 + (gp[...,1]+1)**2)), -1.0, 1.0)).mean().item()
+                    u, v   = flow[...,0], flow[...,1]
+                    ug, vg = gp[...,0],   gp[...,1]
+                    num = u*ug + v*vg
+                    epsilon = 1e-8
+                    den = torch.sqrt(u*u + v*v + epsilon) * torch.sqrt(ug*ug + vg*vg + epsilon)
+                    ang = torch.acos(torch.clamp(num/den, -1.0, 1.0)).mean().item()
                     print(f"\nAngular err (rad): {ang:.4f}\n\n")
                     angular_log.append(ang)
 
@@ -173,19 +176,14 @@ def refine_dense_affine_flow(
                           np.arange(W, dtype=np.float32),
                           indexing="ij")
 
-    # build the per-pixel affine field:
-    # Parameters: [a, b, c, d, e, f] such that:
-    # new_x = a * x + b * y + c
-    # new_y = d * x + e * y + f
-    # Initialize with identity for the affine parts and using the LK flow for translation:
-    # a = 1, b = 0, c = x + flow_x; d = 0, e = 1, f = y + flow_y.
+    # Initialize the affine parameters to identity + translation from init flow
     aff_init = np.zeros((H, W, 6), dtype=np.float32)
-    aff_init[...,0] = 1.0         # a
-    aff_init[...,1] = 0.0         # b
-    aff_init[...,2] = xs + init[...,0]  # c: x + initial flow_x
-    aff_init[...,3] = 0.0         # d
-    aff_init[...,4] = 1.0         # e
-    aff_init[...,5] = ys + init[...,1]  # f: y + initial flow_y
+    aff_init[...,0] = 1.0
+    aff_init[...,1] = 0.0
+    aff_init[...,2] = xs + init[...,0]
+    aff_init[...,3] = 0.0
+    aff_init[...,4] = 1.0
+    aff_init[...,5] = ys + init[...,1]
 
     aff = torch.from_numpy(aff_init).to(device)
     aff = aff.clone().requires_grad_(True)
@@ -224,18 +222,21 @@ def refine_dense_affine_flow(
             loss_log.append(loss.item())
             if gt_flow_uv is not None:
                 with torch.no_grad():
-                    # compute the predicted flow (displacement) from the affine field
-                    # predicted flow = (c - x, f - y) 
-                    pred_flow = torch.stack([aff[...,2] - xs_t, aff[...,5] - ys_t], dim=-1)
+                    pred_flow = torch.stack([
+                        aff[...,0]*xs_t + aff[...,1]*ys_t + aff[...,2] - xs_t, 
+                        aff[...,3]*xs_t + aff[...,4]*ys_t + aff[...,5] - ys_t], 
+                        dim=-1)
                     # End-Point Error
                     epe = torch.linalg.norm(pred_flow - gp, dim=-1).mean().item()
                     print(f"\nEPE to GT: {epe:.4f}")
                     epe_log.append(epe)
                     # Angular error (in radians)
-                    num = ((pred_flow[...,0]+1)*(gp[...,0]+1) + (pred_flow[...,1]+1)*(gp[...,1]+1))
-                    denom = (torch.sqrt((pred_flow[...,0]+1)**2 + (pred_flow[...,1]+1)**2) * 
-                             torch.sqrt((gp[...,0]+1)**2 + (gp[...,1]+1)**2))
-                    ang = torch.acos(torch.clamp(num/denom, -1.0, 1.0)).mean().item()
+                    u, v   = pred_flow[...,0], pred_flow[...,1]
+                    ug, vg = gp[...,0],   gp[...,1]
+                    num = u*ug + v*vg
+                    epsilon = 1e-8
+                    den = torch.sqrt(u*u + v*v + epsilon) * torch.sqrt(ug*ug + vg*vg + epsilon)
+                    ang = torch.acos(torch.clamp(num/den, -1.0, 1.0)).mean().item()
                     print(f"\nAngular err (rad): {ang:.4f}\n\n")
                     angular_log.append(ang)
 
@@ -253,5 +254,8 @@ def refine_dense_affine_flow(
     with torch.no_grad():
         I2w = _warp_with_affine_flow(I2, aff)
         # Return the predicted flow: convert the affine field to a displacement field.
-        pred_flow = torch.stack([aff[...,2] - xs_t, aff[...,5] - ys_t], dim=-1)
+        pred_flow = torch.stack([
+                        aff[...,0]*xs_t + aff[...,1]*ys_t + aff[...,2] - xs_t, 
+                        aff[...,3]*xs_t + aff[...,4]*ys_t + aff[...,5] - ys_t], 
+                        dim=-1)
         return pred_flow.detach().cpu().numpy(), I2w.squeeze().cpu().numpy()
