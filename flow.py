@@ -187,6 +187,7 @@ def process_args():
     parser.add_argument("--levels", help="Number of pyramid levels", type=int, default=5)
     parser.add_argument("--window_size", help="Window size", type=int, default=7)
     parser.add_argument("--alpha", help="Regularization parameter", type=float, default=1e-3)
+    parser.add_argument("--use_affine", help="Use affine refinement or translation", type=bool, default=False)
     parser.add_argument(
         "--goodness-threshold",
         help="Mismatch threshold for forward/reverse flow to be 'good'",
@@ -221,13 +222,20 @@ def main():
         exit(1)
 
 
-    from refine import refine_dense_flow
+    from refine import refine_dense_flow, refine_dense_affine_flow
 
-    flow_refined, I2_warp = refine_dense_flow(
-        args.image1, args.image2, flow, gt_flow,
-        # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
-        steps=10000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
-    )
+    if args.use_affine:    
+        flow_refined, I2_warp = refine_dense_affine_flow(
+            args.image1, args.image2, flow, gt_flow,
+            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
+            steps=10000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
+        )
+    else:
+        flow_refined, I2_warp = refine_dense_flow(
+            args.image1, args.image2, flow, gt_flow,
+            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
+            steps=10000, lr=0.001, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
+        )
 
     disp = visualize_flow_hsv(flow_refined)
     cv.imshow("Dense refined flow", disp)
