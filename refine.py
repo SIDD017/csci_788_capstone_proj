@@ -29,10 +29,29 @@ def _warp_with_flow(I, flow):
     # TODO: Padding mode?
     return F.grid_sample(I, grid, align_corners=True, mode="bilinear", padding_mode="border")
 
+def plot_losses(loss_log, epe_log=None, angular_log=None, save_plot=False, plot_path="loss/loss_plot.png"):
+    plt.figure(figsize=(12,4))
+    plt.subplot(1,3,1)
+    plt.plot(loss_log)
+    plt.title("Total Loss")
+    if epe_log is not None:
+        plt.subplot(1,3,2)
+        plt.plot(epe_log)
+        plt.title("EPE to GT")
+    if angular_log is not None:
+        plt.subplot(1,3,3)
+        plt.plot(angular_log)
+        plt.title("Angular err (rad)")
+    if save_plot:
+        plt.savefig(plot_path)
+    else:
+        plt.show()
+
 def refine_dense_flow(
     image1_np,
     image2_np,
     init_flow_uv,
+    gt_flow_uv=None,
     steps=300,
     lr=1e-1,
     edge_beta=20.0,
@@ -54,7 +73,15 @@ def refine_dense_flow(
 
     opt = torch.optim.Adam([flow], lr=lr)
 
-    for _ in range(steps):
+    # Log metrics
+    loss_log = []
+    epe_log = []
+    angular_log = []
+
+    if gt_flow_uv is not None:
+        gp = torch.from_numpy(gt_flow_uv.astype(np.float32)).to(device)
+
+    for t in range(steps):
         opt.zero_grad()
         I2w = _warp_with_flow(I2, flow)
         resid = I2w - I1 
@@ -69,6 +96,32 @@ def refine_dense_flow(
         loss = data + lambda_smooth * tv
         loss.backward()
         opt.step()
+
+        if (t % 50 == 0):
+            print(f"Iteration {t}: \nLoss={loss.item():.6f}")
+            loss_log.append(loss.item())
+            if gt_flow_uv is not None:
+                with torch.no_grad():
+                    # End-Point Error
+                    epe = torch.linalg.norm(flow - gp, dim=-1).mean().item()
+                    print(f"\nEPE to GT: {epe:.4f}")
+                    epe_log.append(epe)
+                    # Angular error (in radians)
+                    ang = torch.acos(torch.clamp(( (flow[...,0]+1)*(gp[...,0]+1) + (flow[...,1]+1)*(gp[...,1]+1) )/(
+                        torch.sqrt((flow[...,0]+1)**2 + (flow[...,1]+1)**2) * 
+                        torch.sqrt((gp[...,0]+1)**2 + (gp[...,1]+1)**2)), -1.0, 1.0)).mean().item()
+                    print(f"\nAngular err (rad): {ang:.4f}\n\n")
+                    angular_log.append(ang)
+
+        # Early break if loss is very low (convergence criteria)
+        if loss.item() < 1e-5:
+            print(f"Converged at iteration {t} with loss {loss.item():.6f}")
+            break
+
+    # Plot loss and metrics
+    plot_losses(loss_log, epe_log if gt_flow_uv is not None else None, 
+                angular_log if gt_flow_uv is not None else None,
+                save_plot=False)
 
     with torch.no_grad():
         I2w = _warp_with_flow(I2, flow)

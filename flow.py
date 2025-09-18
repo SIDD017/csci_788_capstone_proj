@@ -224,7 +224,7 @@ def main():
     from refine import refine_dense_flow
 
     flow_refined, I2_warp = refine_dense_flow(
-        args.image1, args.image2, flow,
+        args.image1, args.image2, flow, gt_flow,
         # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
         steps=10000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
     )
