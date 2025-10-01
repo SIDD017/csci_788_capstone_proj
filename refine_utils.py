@@ -59,7 +59,7 @@ def refine_flow(
     refine_params=None,
 ):
     if flow.is_flow_refined == True:
-            raise ValueError("Flow has already been refined")
+        raise ValueError("Flow has already been refined")
     flow.is_flow_refined = True
 
     # Refinement parameters
@@ -93,11 +93,9 @@ def refine_flow(
 
         # smoothness on flow with Charbonnier TV (forward differences)
         # flow: H x W x 2  (axis 0 = y/rows, axis 1 = x/cols)
-        dy = torch.linalg.norm(flow.params[1:, :, :] - flow.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
-        dx = torch.linalg.norm(flow.params[:, 1:, :] - flow.params[:, :-1, :], dim=-1)   # H x (W-1) x 2
-        tv = charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()
+        tv = flow.smoothness_tv()
 
-        loss = data + lambda_smooth * tv
+        loss = data + lambda_smooth * tv 
         loss.backward()
         opt.step()
 
@@ -115,10 +113,10 @@ def refine_flow(
                 angular_log.append(ang)
 
         # Early break if loss is very low (convergence criteria)
-        prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
-        if prev_loss - loss.item() < 1e-8:
-            print(f"Converged at iteration {t} with loss {loss.item():.6f}")
-            break
+        # prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
+        # if prev_loss - loss.item() < 1e-8:
+        #     print(f"Converged at iteration {t} with loss {loss.item():.6f}")
+        #     break
 
     # Plot loss and metrics
     plot_losses(loss_log, epe_log, angular_log)

@@ -53,17 +53,17 @@ def main():
     }
 
     # Create specified flow object (affine or 2 param lucas kanade)
-    # if args.use_affine:
-    #     # Affine flow
-    #     flow = AffineFlow(args.image1, args.image2, init_params, use_opencv=args.opencv_init)
-    # else:
-    #     # Custom Lucas Kanade (from assignment)
-    flow = CustomLucasKanadeFlow(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
+    if args.use_affine:
+        # Affine flow
+        flow = AffineFlowWithLocalOrigins(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
+    else:
+        # Custom Lucas Kanade (from assignment)
+        flow = CustomLucasKanadeFlow(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
 
     # Use specified refinement method in args (2 params or affine 8 params)
     # TODO: Make these command line args or read a JSON config file
     refine_params = {
-        "steps": 1000 if args.use_affine else 10000,
+        "steps": 10000,
         "lr": 0.9,
         "edge_beta": 20.0,
         "eps": 1e-3,
