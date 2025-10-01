@@ -33,13 +33,9 @@ def preprocess_input_images(image1_path, image2_path, opencv_init=False):
 
 
 def main():
-    # Process args
     args = process_args()
 
-    # Read and preprocess images
     image1, image2 = preprocess_input_images(args.image1, args.image2, opencv_init=args.opencv_init)
-
-    # Read Ground truth flow
     try:
         gt_flow = read_flo_file(args.gtimage)
     except Exception as e:
@@ -77,26 +73,18 @@ def main():
     # Refine the inital flow using gradient descent
     flow_refined, I2_warp = refine_flow(flow, refine_params)
 
-    disp = visualize_flow_hsv(flow_refined)
-    cv.imshow("Dense refined flow", disp)
     cv.imshow("I2 warped", I2_warp)
-
-    display = visualize_flow_hsv(flow.init_flow.cpu().numpy())
-    gt_display = visualize_gt_flow_hsv(gt_flow)
-    cv.imshow("Optical flow (custom)", display)
-    cv.imshow("Optical flow (ground truth)", gt_display)
     cv.imshow("Image1", image1)
     cv.imshow("Image2", image2)
-    cv.waitKey(0)
-    cv.destroyAllWindows()
+    flow.visualize_params()
 
-    # # Visualize the results and optionally the flow parameters as well if specified
-    # if args.visualize_flow_params:
-    #     flow.visualize_flow()
+    # Visualize the results and optionally the flow parameters as well if specified
+    if args.visualize_flow_params:
+        flow.visualize_flow()
 
-    # # Log results if specified
-    # if args.log_results:
-    #     flow.log_results()
+    # Log results if specified
+    if args.log_results:
+        flow.log_results()
 
 if __name__ == "__main__":
     main()

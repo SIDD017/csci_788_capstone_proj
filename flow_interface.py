@@ -5,6 +5,7 @@ import torch
 
 from init_flow import calculate_initial_flow
 from refine_utils import np_im_to_torch
+from utils import visualize_flow_hsv, visualize_gt_flow_hsv
 
 # Abstract base class for optical flow (2 Param lucas kanade and 6/8 param affine)
 class Flow(ABC):
@@ -46,9 +47,9 @@ class Flow(ABC):
 class CustomLucasKanadeFlow(Flow):
     def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
         super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
-        self.init_flow = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
-        self.init_flow = torch.from_numpy(self.init_flow).to(init_params.get("device", "cpu"))
-        self.params = self.init_flow.clone().requires_grad_(True)
+        temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
+        temp = torch.from_numpy(temp).to(init_params.get("device", "cpu"))
+        self.params = temp.clone().requires_grad_(True)
 
     
     def warp_with_flow(self, xs, ys):
@@ -74,7 +75,15 @@ class CustomLucasKanadeFlow(Flow):
 
 
     def visualize_params(self):
-        pass
+        disp = visualize_flow_hsv(self.params.detach().cpu().numpy())
+        cv.imshow("Dense refined flow", disp)
+        display = visualize_flow_hsv(self.init_flow)
+        gt_display = visualize_gt_flow_hsv(self.gt_flow.cpu().numpy())
+        cv.imshow("Optical flow (custom)", display)
+        cv.imshow("Optical flow (ground truth)", gt_display)
+        cv.waitKey(0)
+        cv.destroyAllWindows()
+
 
     def log_results(self):
         pass  
