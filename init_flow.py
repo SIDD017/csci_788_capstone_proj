@@ -1,5 +1,4 @@
 from utils import *
-# from ground_truth_flo import read_flo_file, visualize_gt_flow_hsv
 
 
 # Helper functions
@@ -33,8 +32,7 @@ def solve_optical_flow_constraint_equation(Ix, Iy, It, alpha = 1e-3, axis=-1):
     m11 = IyIy + alpha
     det_m = m00 * m11 - m01 * m10
 
-    #Shoudln't we check for det_m == 0?
-
+    #Shouldn't we check for det_m == 0?
     # [u, v] = -inv(M) * [IxIt, IyIt]
     u = -(m11 * IxIt - m01 * IyIt) / det_m
     v = -(-m10 * IxIt + m00 * IyIt) / det_m

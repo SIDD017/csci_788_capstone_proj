@@ -129,10 +129,10 @@ def refine_flow(
                 angular_log.append(ang)
 
         # Early break if loss is very low (convergence criteria)
-        prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
-        if prev_loss - loss.item() < 1e-8:
-            print(f"Converged at iteration {t} with loss {loss.item():.6f}")
-            break
+        # prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
+        # if prev_loss - loss.item() < 1e-8:
+        #     print(f"Converged at iteration {t} with loss {loss.item():.6f}")
+        #     break
 
     # Plot loss and metrics
     plot_losses(loss_log, epe_log, angular_log)

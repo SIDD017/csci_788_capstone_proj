@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 import cv2 as cv
 import torch
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
 
 from init_flow import calculate_initial_flow
 from refine_utils import np_im_to_torch, charbonnier_loss, convert_torch_to_cv
@@ -155,7 +157,49 @@ class AffineFlow(Flow):
         return ang
 
     def visualize_params(self):
-        pass
+         # Make small reference patch (letter R)
+        ref_np = np.zeros((16, 16), dtype=np.uint8)
+        cv.putText(ref_np, "R", (1, 14), cv.FONT_HERSHEY_SIMPLEX, 0.5, 255, 1, cv.LINE_AA)
+        ref = torch.tensor(ref_np, dtype=torch.float32, device="cuda") / 255.0  # [H,W] float
+        ref = ref.unsqueeze(0).unsqueeze(0)  # [N=1, C=1, H, W]
+        ref_h, ref_w = ref.shape[2:]
+
+        param_grid = self.params.detach().clone()  # [H, W, 6]
+        H, W = param_grid.shape[:2]
+        # param_grid[...,0] = 0.5
+        # param_grid[...,1] = 0.0
+        param_grid[...,2] = 0.0
+        # param_grid[...,3] = 0.0
+        # param_grid[...,4] = 0.5
+        param_grid[...,5] = 0.0
+
+        # Reshape into batch of 2x3 matrices
+        M = param_grid.view(-1, 2, 3)  # [H*W, 2, 3]
+
+        # Build normalized sampling grids for each affine transform
+        # F.affine_grid generates coordinates for grid_sample
+        grids = F.affine_grid(M, size=(H*W, 1, ref_h, ref_w), align_corners=False)  # [H*W, H, W, 2]
+
+        # Apply all warps in parallel
+        warped = F.grid_sample(ref.expand(H*W, -1, -1, -1), grids, align_corners=False)  # [H*W, 1, h, w]
+
+        # Tile into big canvas
+        warped = warped.squeeze(1)  # [H*W, h, w]
+        canvas = warped.view(H, W, ref_h, ref_w).permute(0,2,1,3).reshape(H*ref_h, W*ref_w)
+
+        plt.imshow(canvas.detach().cpu(), cmap="gray")
+        plt.axis("off")                                                                                                                                                                                                                                                                                                                                                                                        
+        plt.show()
+
+        # Visualize translation parameters (indices 2 and 5)
+        translation = self.params[..., [2, 5]].detach().cpu().numpy()  # shape: [H, W, 2]
+        translation_hsv = visualize_flow_hsv(translation)
+        cv.imshow("Translation (HSV)", translation_hsv)
+
+        cv.waitKey(0)
+        cv.destroyAllWindows()
+
+
 
 
 
@@ -233,4 +277,49 @@ class AffineFlowWithLocalOrigins(Flow):
         return ang
 
     def visualize_params(self):
-        pass
+        # Make small reference patch (letter R)
+        ref_np = np.zeros((16, 16), dtype=np.uint8)
+        cv.putText(ref_np, "R", (1, 14), cv.FONT_HERSHEY_SIMPLEX, 0.5, 255, 1, cv.LINE_AA)
+        ref = torch.tensor(ref_np, dtype=torch.float32, device="cuda") / 255.0  # [H,W] float
+        ref = ref.unsqueeze(0).unsqueeze(0)  # [N=1, C=1, H, W]
+        ref_h, ref_w = ref.shape[2:]
+
+        param_grid = self.params[:,:,:6].detach().clone()  # [H, W, 6]
+        H, W = param_grid.shape[:2]
+        # param_grid[...,0] = 1
+        # param_grid[...,1] = 0.0
+        param_grid[...,2] = 0.0
+        # param_grid[...,3] = 0.0
+        # param_grid[...,4] = 1
+        param_grid[...,5] = 0.0
+
+        # Reshape into batch of 2x3 matrices
+        M = param_grid.view(-1, 2, 3)  # [H*W, 2, 3]
+
+        # Build normalized sampling grids for each affine transform
+        # F.affine_grid generates coordinates for grid_sample
+        grids = F.affine_grid(M, size=(H*W, 1, ref_h, ref_w), align_corners=False)  # [H*W, H, W, 2]
+
+        # Apply all warps in parallel
+        warped = F.grid_sample(ref.expand(H*W, -1, -1, -1), grids, align_corners=False)  # [H*W, 1, h, w]
+
+        # Tile into big canvas
+        warped = warped.squeeze(1)  # [H*W, h, w]
+        canvas = warped.view(H, W, ref_h, ref_w).permute(0,2,1,3).reshape(H*ref_h, W*ref_w)
+
+        plt.imshow(canvas.detach().cpu(), cmap="gray")
+        plt.axis("off")
+        plt.show()
+
+        # Visualize translation parameters (indices 2 and 5)
+        translation = self.params[..., [2, 5]].detach().cpu().numpy()  # shape: [H, W, 2]
+        translation_hsv = visualize_flow_hsv(translation)
+        cv.imshow("Translation (HSV)", translation_hsv)
+
+        # Visualize local origins (indices 6 and 7)
+        local_origins = self.params[..., [6, 7]].detach().cpu().numpy()  # shape: [H, W, 2]
+        local_origins_hsv = visualize_flow_hsv(local_origins)
+        cv.imshow("Local Origins (HSV)", local_origins_hsv)
+
+        cv.waitKey(0)
+        cv.destroyAllWindows()
