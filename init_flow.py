@@ -1,35 +1,7 @@
-import cv2 as cv
-import numpy as np
-import argparse
-from pathlib import Path
-from typing import Optional
-import torch
-import torch.nn.functional
-from ground_truth_flo import read_flo_file, visualize_gt_flow_hsv
-
-# device = "cuda" if torch.cuda.is_available() else "cpu"
-device = "cpu"
+from utils import *
 
 
-def visualize_flow_hsv(flow_uv, max_magnitude = None):
-    nan_mask = np.any(np.isnan(flow_uv), axis=2)
-    flow_uv[nan_mask] = 0
-    magnitude = np.linalg.norm(flow_uv, axis=2)
-    if max_magnitude is None:
-        max_magnitude = np.max(magnitude)
-    angle = np.arctan2(-flow_uv[..., 1], -flow_uv[..., 0])
-    hsv = np.zeros(flow_uv.shape[:2] + (3,), dtype=np.uint8)
-    hsv[..., 0] = (angle + np.pi) * 180 / np.pi / 2
-    hsv[..., 1] = np.clip(magnitude / max_magnitude * 255, 0, 255).astype(np.uint8)
-    hsv[..., 2] = 255
-    hsv[nan_mask, :] = 0
-    return cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
-
-
-def uint8_to_float32(image):
-    return image.astype(np.float32) / 255.0
-
-
+# Helper functions
 def resize_for_pyramid(image, levels):
     height, width = image.shape[:2]
     divisible_by = 2 ** (levels - 1)
@@ -60,14 +32,12 @@ def solve_optical_flow_constraint_equation(Ix, Iy, It, alpha = 1e-3, axis=-1):
     m11 = IyIy + alpha
     det_m = m00 * m11 - m01 * m10
 
-    #Shoudln't we check for det_m == 0?
-
+    #Shouldn't we check for det_m == 0?
     # [u, v] = -inv(M) * [IxIt, IyIt]
     u = -(m11 * IxIt - m01 * IyIt) / det_m
     v = -(-m10 * IxIt + m00 * IyIt) / det_m
 
     return np.stack([u, v], axis=axis)
-
 
 def warp_with_flow(image, flow_uv):
     h, w = image.shape[:2]
@@ -162,61 +132,31 @@ def coarse_to_fine_optical_flow(
     return cv.resize(flow_uv, original_size[::-1], interpolation=cv.INTER_LINEAR)
 
 
-def calculate_forward_reverse_flow(
-    image1,
-    image2,
-    levels,
-    window_size,
-    alpha,
-    goodness_threshold,
-):
-    # Calculate the forward optical flow
-    forward_flow = coarse_to_fine_optical_flow(image1, image2, levels, window_size, alpha)
-
-    # Calculate the reverse optical flow
-    reverse_flow = coarse_to_fine_optical_flow(image2, image1, levels, window_size, alpha)
-
+#Calculate initial flow between 2 images
+def calculate_initial_flow(image1, image2, levels, window_size, alpha, goodness_threshold, use_opencv=False):
+    # If use_opencv is true, use opencv's calcOpticalFlowFarneback to get initial flow
+    if use_opencv:
+        forward_flow = cv.calcOpticalFlowFarneback(image1, image2, None, pyr_scale=0.5, levels=levels, winsize=window_size, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+        reverse_flow = cv.calcOpticalFlowFarneback(image2, image1, None, pyr_scale=0.5, levels=levels, winsize=window_size, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+    else:  
+        # Calculate the forward optical flow
+        forward_flow = coarse_to_fine_optical_flow(image1, image2, levels, window_size, alpha)
+        # Calculate the reverse optical flow
+        reverse_flow = coarse_to_fine_optical_flow(image2, image1, levels, window_size, alpha)
     # Catch occlusion issues and other bad estimates by checking for places where forward and
-    # reverse flow disagree
+    # reverse flow disagre  
     is_bad_flow_estimate = np.linalg.norm(forward_flow + reverse_flow, axis=2) > goodness_threshold
 
     # Final estimate of the optical flow: average forward and reverse, then set poorly-estimated
     # regions to nan
     flow = (forward_flow - reverse_flow) / 2
     flow[is_bad_flow_estimate] = np.nan
-
     return flow
 
-
-def process_args():
-    parser = argparse.ArgumentParser(description="Two-frame optical flow")
-    parser.add_argument("image1", help="First image", type=Path)
-    parser.add_argument("image2", help="Second image", type=Path)
-    parser.add_argument("gtimage", help="Ground truth flow file", type=Path)
-    parser.add_argument("--levels", help="Number of pyramid levels", type=int, default=5)
-    parser.add_argument("--window_size", help="Window size", type=int, default=7)
-    parser.add_argument("--alpha", help="Regularization parameter", type=float, default=1e-3)
-    parser.add_argument(
-        "--goodness-threshold",
-        help="Mismatch threshold for forward/reverse flow to be 'good'",
-        type=float,
-        default=2.0,
-    )
-    args = parser.parse_args()
-    return args
-
 def main():
-    # device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = "cpu"
-
     args = process_args()
-    # Read the images
-    args.image1 = uint8_to_float32(cv.imread(str(args.image1), cv.IMREAD_GRAYSCALE))
-    args.image2 = uint8_to_float32(cv.imread(str(args.image2), cv.IMREAD_GRAYSCALE))
 
-    #TODO: Assert checks = shape, dims, types, etc
-
-    flow = calculate_forward_reverse_flow(
+    flow = calculate_initial_flow(
         args.image1,
         args.image2,
         args.levels,
@@ -230,7 +170,26 @@ def main():
     except Exception as e:
         exit(1)
 
-    # Save the optical flow as an HSV image
+
+    from refine import refine_dense_flow, refine_dense_affine_flow
+
+    if args.use_affine:    
+        flow_refined, I2_warp = refine_dense_affine_flow(
+            args.image1, args.image2, flow, gt_flow,
+            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
+            steps=1000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
+        )
+    else:
+        flow_refined, I2_warp = refine_dense_flow(
+            args.image1, args.image2, flow, gt_flow,
+            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
+            steps=1000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
+        )
+
+    disp = visualize_flow_hsv(flow_refined)
+    cv.imshow("Dense refined flow", disp)
+    cv.imshow("I2 warped", I2_warp)
+
     display = visualize_flow_hsv(flow)
     gt_display = visualize_gt_flow_hsv(gt_flow)
     cv.imshow("Optical flow (custom)", display)
