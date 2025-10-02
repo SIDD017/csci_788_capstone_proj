@@ -9,6 +9,20 @@ def np_im_to_torch(image_np):
     return torch.from_numpy(np.atleast_3d(image_np)).permute(2,0,1).unsqueeze(0)
 
 
+def convert_torch_to_cv(image_tensor):
+    # image_tensor shape is [1, C, H, W]
+    img_np = image_tensor.cpu().numpy()[0]           # shape: [C, H, W]
+    img_np = np.transpose(img_np, (1, 2, 0))           # shape: [H, W, C]
+    # If single channel, convert to 2D
+    if img_np.shape[2] == 1:
+        img_np = img_np[:, :, 0]
+    # Assume image data is in [0,1] float range; scale to [0,255] and convert to uint8
+    if img_np.dtype != np.uint8:
+        img_np = np.clip(img_np, 0, 1)
+        img_np = (img_np * 255).astype(np.uint8)
+    return img_np
+
+
 # Utility functions for flow refinement
 def charbonnier_loss(x, eps=1e-3):
     return torch.sqrt(x*x + eps*eps)
@@ -44,7 +58,7 @@ def warp_image_with_flow(flow, image=None):
     dev, dt = image.device, image.dtype
     ys, xs = torch.meshgrid(torch.arange(H, device=dev),
                             torch.arange(W, device=dev), indexing="ij")
-    x_new, y_new = flow.warp_with_flow(xs, ys)
+    x_new, y_new = flow.pred_flow(xs, ys)
     # Convert to [-1,1] range for grid_sample
     gx = (x_new / (W - 1)) * 2 - 1
     gy = (y_new / (H - 1)) * 2 - 1
@@ -95,7 +109,9 @@ def refine_flow(
         # flow: H x W x 2  (axis 0 = y/rows, axis 1 = x/cols)
         tv = flow.smoothness_tv()
 
-        loss = data + lambda_smooth * tv 
+        origin_reg = flow.get_origin_reg()
+
+        loss = data + lambda_smooth * tv + 0.1 * origin_reg
         loss.backward()
         opt.step()
 
@@ -113,10 +129,10 @@ def refine_flow(
                 angular_log.append(ang)
 
         # Early break if loss is very low (convergence criteria)
-        # prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
-        # if prev_loss - loss.item() < 1e-8:
-        #     print(f"Converged at iteration {t} with loss {loss.item():.6f}")
-        #     break
+        prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
+        if prev_loss - loss.item() < 1e-8:
+            print(f"Converged at iteration {t} with loss {loss.item():.6f}")
+            break
 
     # Plot loss and metrics
     plot_losses(loss_log, epe_log, angular_log)
