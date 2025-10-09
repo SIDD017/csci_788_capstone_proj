@@ -52,11 +52,11 @@ def main():
     }
     # TODO: Make these command line args or read a JSON config file
     refine_params = {
-        "steps": 4000,
-        "lr": 0.9,
+        "steps": 50000,
+        "lr": 1e-2,
         "edge_beta": 20.0,
         "eps": 1e-3,
-        "lambda_smooth": 10,
+        "lambda_smooth": 0.1,
     }
 
     # Create specified flow object (affine or 2 param lucas kanade)
@@ -169,7 +169,7 @@ def main():
             plt.close()
 
             # Visualize and save regular flow visualization
-            # flow.visualize_flow()
+            flow.visualize_flow()
             if args.visualize_flow_params:
                 flow.visualize_params()
 
