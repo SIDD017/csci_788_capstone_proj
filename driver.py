@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 from utils import uint8_to_float32, read_flo_file
 from flow_interface import *
-from refine_utils import refine_flow
+from refine_utils import refine_flow, convert_torch_to_cv
 
 
 def process_args():
@@ -52,18 +52,18 @@ def main():
     }
     # TODO: Make these command line args or read a JSON config file
     refine_params = {
-        "steps": 10000,
+        "steps": 4000,
         "lr": 0.9,
         "edge_beta": 20.0,
         "eps": 1e-3,
-        "lambda_smooth": 0.1,
+        "lambda_smooth": 10,
     }
 
     # Create specified flow object (affine or 2 param lucas kanade)
     if args.use_affine:
         # Affine flow
-        # flow = AffineFlowWithLocalOrigins(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
-        flow = AffineFlow(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
+        flow = AffineFlowWithLocalOrigins(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
+        # flow = AffineFlow(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
     else:
         # Custom Lucas Kanade (from assignment)
         flow = CustomLucasKanadeFlow(image1, image2, gt_flow, init_params, use_opencv=args.opencv_init)
@@ -73,33 +73,106 @@ def main():
     import tempfile
     if args.log_results:
         mlflow.set_tracking_uri("http://127.0.0.1:5000")
-        mlflow.set_experiment("Optical Flow Refinement Experiment")
+        mlflow.set_experiment("Optical Flow Refinement Experiment Updated (Separated TV terms)")
         with mlflow.start_run():
-            # Log command-line flags and parameters
+            # Log parameters
             mlflow.log_param("use_affine", args.use_affine)
             mlflow.log_param("opencv_init", args.opencv_init)
             mlflow.log_param("visualize_flow_params", args.visualize_flow_params)
             mlflow.log_params(init_params)
             mlflow.log_params(refine_params)
         
+            # Refine the flow and compute the warped image
             flow_refined, I2_warp = refine_flow(flow, refine_params)
+
+            # Convert I2_warp to uint8 (assuming it's in [0, 1] range)
             I2_warp_uint8 = (np.clip(I2_warp, 0, 1) * 255).astype(np.uint8)
-            # Save I2_warp and log as artifact
-            temp_warp = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+
+            # Save the warped image and log as an artifact
+            temp_warp = "I2_warp.png"
             cv.imwrite(temp_warp, I2_warp_uint8)
             mlflow.log_artifact(temp_warp, artifact_path="outputs")
+
+            # Save image1 converted from torch format and log as an artifact
+            temp_warp = "image1.png"
+            cv.imwrite(temp_warp, convert_torch_to_cv(flow.image1))
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+
+            # Save image2 converted from torch format and log as an artifact
+            temp_warp = "image2.png"
+            cv.imwrite(temp_warp, convert_torch_to_cv(flow.image2))
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+
+            # Save the flow parameter visualization (using HSV) as an artifact
+            temp_warp = "flow_params.png"
+            disp = visualize_flow_hsv(flow.params.detach().cpu().numpy())
+            cv.imwrite(temp_warp, disp)
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+
+            # Visualize the initial flow and ground truth flow
+            temp_warp = "init_flow.png"
+            display = visualize_flow_hsv(flow.init_flow)
+            gt_display = visualize_gt_flow_hsv(flow.gt_flow.cpu().numpy())
+            cv.imwrite(temp_warp, display)
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+            temp_warp = "gt_flow.png"
+            cv.imwrite(temp_warp, gt_display)
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+
+            # Save plots to mlflow as well
+            temp_warp = "loss_plots.png"
+            plt.figure(figsize=(18, 4))
+    
+            plt.subplot(1, 5, 1)
+            plt.plot(flow.log_metrics["loss_log"])
+            plt.title("Total Loss")
             
+            plt.subplot(1, 5, 2)
+            plt.plot(flow.log_metrics["data_loss_log"])
+            plt.title("Data Loss")
+            
+            plt.subplot(1, 5, 3)
+            plt.plot(flow.log_metrics["smoothness_loss_log"])
+            plt.title("Smoothness Loss")
+            
+            plt.subplot(1, 5, 4)
+            plt.plot(flow.log_metrics["epe_log"])
+            plt.title("EPE to GT")
+            
+            plt.subplot(1, 5, 5)
+            plt.plot(flow.log_metrics["angular_log"])
+            plt.title("Angular Err (rad)")
+
+            plt.tight_layout()
+            plt.savefig(temp_warp)
+            plt.show()
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+            plt.close()
+
+            # Individual tv plots
+            plt.figure(figsize=(18, 4))
+            plt.subplot(1, 3, 1)
+            plt.plot(flow.log_metrics["uv_tv_log"])
+            plt.title("UV TV")
+            if args.use_affine:
+                plt.subplot(1, 3, 2)
+                plt.plot(flow.log_metrics["A_tv_log"])
+                plt.title("A TV")
+                plt.subplot(1, 3, 3)
+                plt.plot(flow.log_metrics["origin_tv_log"])
+                plt.title("Origin TV")
+            plt.tight_layout()
+            temp_warp = "tv_plots.png"
+            plt.savefig(temp_warp)
+            plt.show()
+            mlflow.log_artifact(temp_warp, artifact_path="outputs")
+            plt.close()
+
             # Visualize and save regular flow visualization
             # flow.visualize_flow()
-            # if args.visualize_flow_params:
-            #     flow.visualize_params()
-            
-            # (Optional) If available, use flow.log_results() to log extra metrics/artifacts.
-            # For example:
-            # loss = 0.0  # Replace with actual loss value
-            # epe = flow.epe_error()
-            # ang_err = flow.angular_error() if hasattr(flow, "angular_error") else 0.0
-            # flow.log_results(loss, epe, ang_err, I2_warp)
+            if args.visualize_flow_params:
+                flow.visualize_params()
+
     else:
         # Refine the inital flow using gradient descent
         flow_refined, I2_warp = refine_flow(flow, refine_params)

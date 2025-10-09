@@ -37,17 +37,13 @@ def sobel_magnitude(t):
     return torch.sqrt(gx*gx + gy*gy)
 
 
-def plot_losses(loss_log, epe_log, angular_log):
-    plt.figure(figsize=(12,4))
-    plt.subplot(1,3,1)
-    plt.plot(loss_log)
-    plt.title("Total Loss")
-    plt.subplot(1,3,2)
-    plt.plot(epe_log)
-    plt.title("EPE to GT")
-    plt.subplot(1,3,3)
-    plt.plot(angular_log)
-    plt.title("Angular err (rad)")
+def plot_losses(flow):
+    # plot everything in flow.log_metrics
+    plt.figure(figsize=(18, 4))
+    for i, (key, values) in enumerate(flow.log_metrics.items()):
+        plt.subplot(1, len(flow.log_metrics), i + 1)
+        plt.plot(values)
+        plt.title(key)
     plt.show()
 
 
@@ -91,12 +87,15 @@ def refine_flow(
     opt = torch.optim.Adam([flow.params], lr=lr)
 
     # Log metrics
+    data_loss_log = []
+    smoothness_loss_log = []
     loss_log = []
     epe_log = []
     angular_log = []
 
     # Gradient descent to refine the flow
     for t in range(steps):
+        # flow.visualize_params()  # For debugging
         # Initialize the gradients to zero
         opt.zero_grad()
         # Warp I2 using current flow estimate
@@ -111,38 +110,44 @@ def refine_flow(
 
         origin_reg = flow.get_origin_reg()
 
-        loss = data + lambda_smooth * tv + 0.1 * origin_reg
+        # loss = data + lambda_smooth * tv + 0.1 * origin_reg
+        loss = data + lambda_smooth * sum(tv.values())
         loss.backward()
         opt.step()
 
         if (t % 50 == 0):
             print(f"Iteration {t}: \nLoss={loss.item():.6f}")
-            loss_log.append(loss.item())
+            flow.log_metrics["loss_log"].append(loss.item())
             with torch.no_grad():
+                flow.log_metrics["data_loss_log"].append(data.item())
+                flow.log_metrics["smoothness_loss_log"].append(sum(tv.values()).item())
                 # End-Point Error
                 epe = flow.epe_error()
                 print(f"\nEPE to GT: {epe:.4f}")
-                epe_log.append(epe)
+                flow.log_metrics["epe_log"].append(epe)
                 # Angular error (in radians)
                 ang = flow.angular_error()
                 print(f"\nAngular err (rad): {ang:.4f}\n\n")
-                angular_log.append(ang)
+                flow.log_metrics["angular_log"].append(ang)
+                # TV terms
+                for k, v in tv.items():
+                    flow.log_metrics[f"{k}_tv_log"].append(v.item())
 
         # Early break if loss is very low (convergence criteria)
-        # prev_loss = loss_log[-2] if len(loss_log) > 1 else float('inf')
+        # prev_loss = flow.log_metrics["loss_log"][-2] if len(flow.log_metrics["loss_log"]) > 1 else float('inf')
         # if prev_loss - loss.item() < 1e-8:
         #     print(f"Converged at iteration {t} with loss {loss.item():.6f}")
         #     break
 
     # Plot loss and metrics
-    plot_losses(loss_log, epe_log, angular_log)
+    plot_losses(flow)
     
-    # Log results for MLFlow/TensorBoard if needed
-    flow.log_metrics = {
-        "loss_log": loss_log,
-        "epe_log": epe_log,
-        "angular_log": angular_log
-    }
+    # # Log results for MLFlow/TensorBoard if needed
+    # flow.log_metrics = {
+    #     "loss_log": loss_log,
+    #     "epe_log": epe_log,
+    #     "angular_log": angular_log
+    # }
 
     with torch.no_grad():
         I2w = warp_image_with_flow(flow)

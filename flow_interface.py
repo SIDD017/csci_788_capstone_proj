@@ -25,6 +25,14 @@ class Flow(ABC):
         self.image2 = np_im_to_torch(image2).to(init_params.get("device", "cpu"))
         self.gt_flow = torch.from_numpy(gt_flow.astype(np.float32)).to(init_params.get("device", "cpu"))
         self.is_flow_refined = False
+        self.log_metrics = {"data_loss_log": [],
+                            "smoothness_loss_log": [],
+                            "loss_log": [],
+                            "epe_log": [],
+                            "angular_log": [],
+                            "A_tv_log": [],
+                            "uv_tv_log": [],
+                            "origin_tv_log": []}
 
     # Warp an image using the flow field
     @abstractmethod
@@ -77,7 +85,7 @@ class CustomLucasKanadeFlow(Flow):
     def smoothness_tv(self):
         dy = torch.linalg.norm(self.params[1:, :, :] - self.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
         dx = torch.linalg.norm(self.params[:, 1:, :] - self.params[:, :-1, :], dim=-1)   # H x (W-1) x 2
-        return charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()
+        return {"uv": charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()}
 
     def get_origin_reg(self):
         return 0.0
@@ -133,7 +141,7 @@ class AffineFlow(Flow):
     def smoothness_tv(self):
         dy = self.params[1:, :, :] - self.params[:-1, :, :]   # (H-1) x W x 6
         dx = self.params[:, 1:, :] - self.params[:, :-1, :]   # H x (W-1) x 6
-        return charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
+        return {"uv":charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()}
     
     def get_origin_reg(self):
         return 0.0
@@ -249,8 +257,9 @@ class AffineFlowWithLocalOrigins(Flow):
             dx = self.params[:, 1:, a:b] - self.params[:, :-1, a:b]
             tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
                             charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
-        tv = sum(tv_terms.values())
-        return tv
+        # tv = sum(tv_terms.values())
+        # return tv
+        return tv_terms
     
     def get_origin_reg(self):
         aff = self.params
