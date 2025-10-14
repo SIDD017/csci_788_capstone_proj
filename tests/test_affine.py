@@ -1,5 +1,6 @@
 import unittest
 
+import numpy as np
 import torch
 
 from affine import operator_norm, frobenius_norm
@@ -37,6 +38,22 @@ class TestOpNorm(unittest.TestCase):
         assert norm_flat.shape == (3,)
         assert torch.allclose(norm_flat, torch.tensor([4.0, 8.0, 12.0]))
 
+    def test_operator_norm_is_rotation_invariant(self):
+        # The operator norm should be invariant under rotations
+        A = torch.tensor([[3.0, 0.0], [0.0, 4.0]])
+        norm_A = operator_norm(A)
+
+        theta = torch.pi / 4  # 45 degrees
+        R = torch.tensor(
+            [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]],
+            dtype=torch.float32,
+        )
+
+        A_rotated = R @ A @ R.T
+        norm_A_rotated = operator_norm(A_rotated)
+
+        assert torch.isclose(norm_A, norm_A_rotated)
+
 
 class TestFrobNorm(unittest.TestCase):
     def test_frobenius_norm_2x2(self):
@@ -69,3 +86,19 @@ class TestFrobNorm(unittest.TestCase):
         norm_flat = frobenius_norm(A_flat)
         assert norm_flat.shape == (3,)
         assert torch.allclose(norm_flat, torch.tensor([5.0, 10.0, 15.0]))
+
+    def test_frobenius_norm_is_rotation_invariant(self):
+        # The frobenius norm is expected to be invariant under rotations
+        A = torch.tensor([[3.0, 0.0], [0.0, 4.0]])
+        norm_A = frobenius_norm(A)
+
+        theta = torch.pi / 4  # 45 degrees
+        R = torch.tensor(
+            [[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]],
+            dtype=torch.float32,
+        )
+
+        A_rotated = R @ A @ R.T
+        norm_A_rotated = frobenius_norm(A_rotated)
+
+        assert torch.isclose(norm_A, norm_A_rotated)
