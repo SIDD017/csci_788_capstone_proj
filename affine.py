@@ -61,7 +61,7 @@ def operator_norm(A: torch.Tensor) -> torch.Tensor:
     This norm is invariant to rotations and translations of the input space.
     """
     # Compute A^T * A
-    AtA = torch.einsum("...ij,...jk->...ik", A, A)
+    AtA = torch.einsum("...ji,...jk->...ik", A, A)
     # Compute eigenvalues of A^T * A
     eigvals = torch.linalg.eigvalsh(AtA)  # Shape (..., d)
     # The operator norm is the square root of the largest eigenvalue
