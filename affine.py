@@ -98,3 +98,12 @@ def frobenius_diff(A1: torch.Tensor, A2: torch.Tensor) -> torch.Tensor:
     A1 and A2 are expected to be of shape (..., d, d)
     """
     return frobenius_norm(A1 - A2)
+
+
+def matrix_exp(log_A: torch.Tensor) -> torch.Tensor:
+    """
+    Given a batch of matrices log_A, compute the matrix exponential exp(log_A). This allows for
+    optimization in the 'unconstrained' logarithm space.
+    """
+    s = log_A.shape
+    return torch.matrix_exp(_enforce_matrix_shape(log_A)).reshape(s)

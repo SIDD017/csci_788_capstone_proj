@@ -3,7 +3,33 @@ import unittest
 import numpy as np
 import torch
 
-from affine import operator_norm, frobenius_norm
+from affine import operator_norm, frobenius_norm, matrix_exp
+
+
+class TestLogParameterization(unittest.TestCase):
+    def test_log_flat(self):
+        log_A = torch.zeros(3, 4)
+        A = matrix_exp(log_A)
+        assert A.shape == log_A.shape
+        assert torch.allclose(A, torch.eye(2).repeat(3, 1, 1).view(3, 4))
+
+    def test_log_2x2(self):
+        log_A = torch.zeros(2, 2)
+        A = matrix_exp(log_A)
+        assert A.shape == log_A.shape
+        assert torch.allclose(A, torch.eye(2))
+
+    def test_log_Bx2x2(self):
+        log_A = torch.zeros(3, 2, 2)
+        A = matrix_exp(log_A)
+        assert A.shape == log_A.shape
+        assert torch.allclose(A, torch.eye(2).repeat(3, 1, 1))
+
+    def test_log_Bx3x3(self):
+        log_A = torch.zeros(5, 3, 3)
+        A = matrix_exp(log_A)
+        assert A.shape == log_A.shape
+        assert torch.allclose(A, torch.eye(3).repeat(5, 1, 1))
 
 
 class TestOpNorm(unittest.TestCase):
