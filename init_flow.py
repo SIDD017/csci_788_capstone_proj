@@ -140,9 +140,9 @@ def calculate_initial_flow(image1, image2, levels, window_size, alpha, goodness_
         reverse_flow = cv.calcOpticalFlowFarneback(image2, image1, None, pyr_scale=0.5, levels=levels, winsize=window_size, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
     else:  
         # Calculate the forward optical flow
-        forward_flow = coarse_to_fine_optical_flow(image1, image2, levels, window_size, alpha)
+        forward_flow = coarse_to_fine_optical_flow(uint8_to_float32(image1), uint8_to_float32(image2), levels, window_size, alpha)
         # Calculate the reverse optical flow
-        reverse_flow = coarse_to_fine_optical_flow(image2, image1, levels, window_size, alpha)
+        reverse_flow = coarse_to_fine_optical_flow(uint8_to_float32(image2), uint8_to_float32(image1), levels, window_size, alpha)
     # Catch occlusion issues and other bad estimates by checking for places where forward and
     # reverse flow disagre  
     is_bad_flow_estimate = np.linalg.norm(forward_flow + reverse_flow, axis=2) > goodness_threshold

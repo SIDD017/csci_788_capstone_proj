@@ -1,7 +1,9 @@
+import mlflow
 import numpy as np
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import cv2 as cv
 
 
 def np_im_to_torch(image_np):
@@ -23,7 +25,6 @@ def convert_torch_to_cv(image_tensor):
     return img_np
 
 
-# Utility functions for flow refinement
 def charbonnier_loss(x, eps=1e-3):
     return torch.sqrt(x*x + eps*eps)
 
@@ -37,16 +38,6 @@ def sobel_magnitude(t):
     return torch.sqrt(gx*gx + gy*gy)
 
 
-def plot_losses(flow):
-    # plot everything in flow.log_metrics
-    plt.figure(figsize=(18, 4))
-    for i, (key, values) in enumerate(flow.log_metrics.items()):
-        plt.subplot(1, len(flow.log_metrics), i + 1)
-        plt.plot(values)
-        plt.title(key)
-    plt.show()
-
-
 def warp_image_with_flow(flow, image=None):
     if image is None:
         image = flow.image2
@@ -54,7 +45,7 @@ def warp_image_with_flow(flow, image=None):
     dev, dt = image.device, image.dtype
     ys, xs = torch.meshgrid(torch.arange(H, device=dev),
                             torch.arange(W, device=dev), indexing="ij")
-    x_new, y_new = flow.pred_flow(xs, ys)
+    x_new, y_new = flow.warped_coords(xs, ys)
     # Convert to [-1,1] range for grid_sample
     gx = (x_new / (W - 1)) * 2 - 1
     gy = (y_new / (H - 1)) * 2 - 1
@@ -62,6 +53,15 @@ def warp_image_with_flow(flow, image=None):
     grid = torch.stack([gx, gy], -1).unsqueeze(0)
     # TODO: Padding mode?
     return F.grid_sample(image, grid, align_corners=True, mode="bilinear", padding_mode="border")
+
+
+def debug_edge_weighting(w_edge):
+    v_edge = w_edge.clone().cpu().numpy()[0,0]
+    v_edge = (np.clip(v_edge, 0, 1) * 255).astype(np.uint8)
+    cv.imshow("downweight edge", v_edge)
+    cv.waitKey(0)
+    cv.destroyAllWindows()
+    exit(0)
 
 
 def refine_flow(
@@ -72,42 +72,24 @@ def refine_flow(
         raise ValueError("Flow has already been refined")
     flow.is_flow_refined = True
 
-    # Refinement parameters
-    steps = refine_params.get("steps", 300)
-    lr = refine_params.get("lr", 1e-1)
-    edge_beta = refine_params.get("edge_beta", 20.0)
-    eps = refine_params.get("eps", 1e-3)
     lambda_smooth = refine_params.get("lambda_smooth", 0.1)
 
     # edge downweighting on I1
-    w_edge = 1.0 / (1.0 + edge_beta * sobel_magnitude(flow.image1))
+    w_edge = 1.0 / (1.0 + refine_params.get("edge_beta", 20.0) * sobel_magnitude(flow.image1))
     w_edge = w_edge.detach()
 
-    # Optimizer
-    opt = torch.optim.Adam([flow.params], lr=lr)
+    # debug_edge_weighting(w_edge)
 
-    # Log metrics
-    data_loss_log = []
-    smoothness_loss_log = []
-    loss_log = []
-    epe_log = []
-    angular_log = []
+    opt = torch.optim.Adam([flow.params], lr=refine_params.get("lr", 1e-1))
 
     # Gradient descent to refine the flow
-    for t in range(steps):
-        # flow.visualize_params()  # For debugging
-        # Initialize the gradients to zero
+    for t in range(refine_params.get("steps", 1000)):
         opt.zero_grad()
         # Warp I2 using current flow estimate
         I2w = warp_image_with_flow(flow)
-        # Data term: robust photometric error with Charbonnier loss
         resid = I2w - flow.image1
-        data = (charbonnier_loss(resid, eps=eps) * w_edge).mean()
-
-        # smoothness on flow with Charbonnier TV (forward differences)
-        # flow: H x W x 2  (axis 0 = y/rows, axis 1 = x/cols)
+        data = (charbonnier_loss(resid, eps=refine_params.get("eps", 1e-3)) * w_edge).mean()
         tv = flow.smoothness_tv()
-
         origin_reg = flow.get_origin_reg()
 
         # loss = data + lambda_smooth * tv + 0.1 * origin_reg
@@ -133,22 +115,14 @@ def refine_flow(
                 for k, v in tv.items():
                     flow.log_metrics[f"{k}_tv_log"].append(v.item())
 
+            mlflow.log_metrics({k: lst[-1] for k, lst in flow.log_metrics.items()}, step=t)
+
         # Early break if loss is very low (convergence criteria)
         # prev_loss = flow.log_metrics["loss_log"][-2] if len(flow.log_metrics["loss_log"]) > 1 else float('inf')
         # if prev_loss - loss.item() < 1e-8:
         #     print(f"Converged at iteration {t} with loss {loss.item():.6f}")
         #     break
-
-    # Plot loss and metrics
-    plot_losses(flow)
-    
-    # # Log results for MLFlow/TensorBoard if needed
-    # flow.log_metrics = {
-    #     "loss_log": loss_log,
-    #     "epe_log": epe_log,
-    #     "angular_log": angular_log
-    # }
-
     with torch.no_grad():
         I2w = warp_image_with_flow(flow)
-        return flow.params.detach().cpu().numpy(), I2w.squeeze().cpu().numpy()
+        disp = flow.pred_flow()
+        return disp.detach().cpu().numpy(), I2w.squeeze().cpu().numpy()

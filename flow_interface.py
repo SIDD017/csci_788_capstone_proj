@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 from init_flow import calculate_initial_flow
 from refine_utils import np_im_to_torch, charbonnier_loss, convert_torch_to_cv
-from utils import visualize_flow_hsv, visualize_gt_flow_hsv
+from utils import uint8_to_float32, visualize_flow_hsv, visualize_gt_flow_hsv
 
 # Abstract base class for optical flow (2 Param lucas kanade and 6/8 param affine)
 class Flow(ABC):
@@ -21,22 +21,23 @@ class Flow(ABC):
                                              init_params["alpha"], 
                                              init_params["goodness_threshold"], 
                                              use_opencv)
-        self.image1 = np_im_to_torch(image1).to(init_params.get("device", "cpu"))
-        self.image2 = np_im_to_torch(image2).to(init_params.get("device", "cpu"))
+        self.image1 = np_im_to_torch(uint8_to_float32(image1)).to(init_params.get("device", "cpu"))
+        self.image2 = np_im_to_torch(uint8_to_float32(image2)).to(init_params.get("device", "cpu"))
         self.gt_flow = torch.from_numpy(gt_flow.astype(np.float32)).to(init_params.get("device", "cpu"))
         self.is_flow_refined = False
         self.log_metrics = {"data_loss_log": [],
                             "smoothness_loss_log": [],
                             "loss_log": [],
                             "epe_log": [],
-                            "angular_log": [],
-                            "A_tv_log": [],
-                            "uv_tv_log": [],
-                            "origin_tv_log": []}
+                            "angular_log": []}
 
     # Warp an image using the flow field
     @abstractmethod
-    def pred_flow(self, xs, ys):
+    def warped_coords(self, xs, ys):
+        pass
+
+    @abstractmethod
+    def pred_flow(self):
         pass
 
     @abstractmethod
@@ -65,15 +66,20 @@ class Flow(ABC):
 class CustomLucasKanadeFlow(Flow):
     def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
         super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
+        self.log_metrics["uv_tv_log"] = []
         temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
         temp = torch.from_numpy(temp).to(init_params.get("device", "cpu"))
         self.params = temp.clone().requires_grad_(True)
 
     
-    def pred_flow(self, xs, ys):
+    def warped_coords(self, xs, ys):
         xw = xs + self.params[...,0]
         yw = ys + self.params[...,1]
         return xw, yw
+
+
+    def pred_flow(self):
+        return self.params
     
     def smoothness_tv(self):
         dy = torch.linalg.norm(self.params[1:, :, :] - self.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
@@ -117,7 +123,10 @@ class CustomLucasKanadeFlow(Flow):
 
 class AffineFlow(Flow):
     def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
-        super().__init__(image1, image2, gt_flow, init_params, use_opencv=False)
+        super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
+        self.log_metrics["A_tv_log"] = []
+        self.log_metrics["uv_tv_log"] = []
+        self.log_metrics["origin_tv_log"] = []
         # Initialize the affine parameters to identity + translation from init flow
         temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
         H, W, _ = temp.shape
@@ -137,37 +146,80 @@ class AffineFlow(Flow):
         self.xs_t = torch.from_numpy(xs).to(init_params.get("device", "cpu"))
         self.ys_t = torch.from_numpy(ys).to(init_params.get("device", "cpu"))
 
-    
-    def pred_flow(self, xs, ys):
+
+    def warped_coords(self, xs, ys):
         x_new = self.params[...,0]*xs + self.params[...,1]*ys + self.params[...,2]
         y_new = self.params[...,3]*xs + self.params[...,4]*ys + self.params[...,5]
         return x_new, y_new
     
+    def pred_flow(self):
+        x_new, y_new = self.warped_coords(self.xs_t, self.ys_t)
+        warped_coords = torch.stack([x_new, y_new], dim=-1)
+        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
+        return warped_coords - grid
+
     def smoothness_tv(self):
-        dy = self.params[1:, :, :] - self.params[:-1, :, :]   # (H-1) x W x 6
-        dx = self.params[:, 1:, :] - self.params[:, :-1, :]   # H x (W-1) x 6
-        return {"uv":charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()}
+        groups = {
+            "A": [0, 1, 3, 4],
+            "uv": [2, 5]
+        }
+        tv_terms = {}
+        for key, indices in groups.items():
+            group = self.params[..., indices]  # use fancy indexing
+            dy = group[1:, :, :] - group[:-1, :, :]
+            dx = group[:, 1:, :] - group[:, :-1, :]
+            tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
+                            charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
+        return tv_terms
+        # dy = self.params[1:, :, :] - self.params[:-1, :, :]   # (H-1) x W x 6
+        # dx = self.params[:, 1:, :] - self.params[:, :-1, :]   # H x (W-1) x 6
+        # return {"uv":charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()}
     
     def get_origin_reg(self):
         return 0.0
     
     def epe_error(self):
-        x_new, y_new = self.pred_flow(self.xs_t, self.ys_t)
-        pred_flow = torch.stack([x_new, y_new], dim=-1)
-        epe = torch.linalg.norm(pred_flow - self.gt_flow, dim=-1)  # H x W
+        disp = self.pred_flow()
+        epe = torch.linalg.norm(disp - self.gt_flow, dim=-1)
         return epe.mean().item()
+    
 
     def angular_error(self):
-        u, v = self.pred_flow(self.xs_t, self.ys_t)
-        # u, v   = pred_flow[...,0], pred_flow[...,1]
-        ug, vg = self.gt_flow[...,0], self.gt_flow[...,1]
-        num = u*ug + v*vg
+        disp = self.pred_flow()
+        u, v   = disp[..., 0], disp[..., 1]
+        ug, vg = self.gt_flow[..., 0], self.gt_flow[..., 1]
+
+        num = u * ug + v * vg
         epsilon = 1e-8
-        gtmag = torch.sqrt(ug*ug + vg*vg)
-        mask = gtmag > 0.1
-        den = torch.sqrt(u*u + v*v + epsilon) * torch.sqrt(ug*ug + vg*vg + epsilon)
-        ang = torch.acos(torch.clamp(num/den, -1.0, 1.0)).mean().item()
-        return ang
+        pred_mag = torch.sqrt(u * u + v * v + epsilon)
+        gt_mag   = torch.sqrt(ug * ug + vg * vg + epsilon)
+        den = pred_mag * gt_mag
+        ang = torch.acos(torch.clamp(num / den, -1.0, 1.0))
+        return ang.mean().item()
+
+
+    def visualize_flow(self):
+        # Display the original images
+        cv.imshow("Image1", convert_torch_to_cv(self.image1))
+        cv.imshow("Image2", convert_torch_to_cv(self.image2))
+        
+        # Compute predicted absolute flow using the learned affine transform
+        disp = self.pred_flow()
+        disp_np = disp.detach().cpu().numpy()
+        
+        # Visualize the predicted displacement field (refined flow)
+        disp_hsv = visualize_flow_hsv(disp_np)
+        cv.imshow("Dense refined flow", disp_hsv)
+        
+        # Visualize the initial flow and ground truth for comparison
+        disp_init = visualize_flow_hsv(self.init_flow)
+        gt_disp = visualize_gt_flow_hsv(self.gt_flow.cpu().numpy())
+        cv.imshow("Optical flow (initial)", disp_init)
+        cv.imshow("Optical flow (ground truth)", gt_disp)
+        
+        cv.waitKey(0)
+        cv.destroyAllWindows()
+    
 
     def visualize_params(self):
          # Make small reference patch (letter R)
@@ -179,11 +231,7 @@ class AffineFlow(Flow):
 
         param_grid = self.params.detach().clone()  # [H, W, 6]
         H, W = param_grid.shape[:2]
-        # param_grid[...,0] = 0.5
-        # param_grid[...,1] = 0.0
         param_grid[...,2] = 0.0
-        # param_grid[...,3] = 0.0
-        # param_grid[...,4] = 0.5
         param_grid[...,5] = 0.0
 
         # Reshape into batch of 2x3 matrices
@@ -218,7 +266,10 @@ class AffineFlow(Flow):
 
 class AffineFlowWithLocalOrigins(Flow):
     def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
-        super().__init__(image1, image2, gt_flow, init_params, use_opencv=False)
+        super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
+        self.log_metrics["A_tv_log"] = []
+        self.log_metrics["uv_tv_log"] = []
+        self.log_metrics["origin_tv_log"] = []
         # Initialize any additional parameters for affine flow and local origins
         temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
         H, W, _ = temp.shape
@@ -241,7 +292,7 @@ class AffineFlowWithLocalOrigins(Flow):
         self.ys_t = torch.from_numpy(ys).to(init_params.get("device", "cpu"))
 
 
-    def pred_flow(self, xs, ys):
+    def warped_coords(self, xs, ys):
         ox = self.params[...,6]
         oy = self.params[...,7]
         localx = xs - ox
@@ -250,6 +301,12 @@ class AffineFlowWithLocalOrigins(Flow):
         y_new = oy + self.params[...,3]*localx + self.params[...,4]*localy + self.params[...,5]
         return x_new, y_new
     
+    def pred_flow(self):
+        x_new, y_new = self.warped_coords(self.xs_t, self.ys_t)
+        warped_coords = torch.stack([x_new, y_new], dim=-1)
+        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
+        return warped_coords - grid
+
     def smoothness_tv(self):
         groups = {
             "A": [0, 1, 3, 4],
@@ -264,15 +321,6 @@ class AffineFlowWithLocalOrigins(Flow):
             tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
                             charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
         return tv_terms
-        # tv_terms = {}
-        # for key, (a, b) in groups.items():
-        #     dy = self.params[1:, :, a:b] - self.params[:-1, :, a:b]
-        #     dx = self.params[:, 1:, a:b] - self.params[:, :-1, a:b]
-        #     tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
-        #                     charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
-        # # tv = sum(tv_terms.values())
-        # # return tv
-        # return tv_terms
     
     def get_origin_reg(self):
         aff = self.params
@@ -280,19 +328,13 @@ class AffineFlowWithLocalOrigins(Flow):
         return origin_reg
 
     def epe_error(self):
-        x_new, y_new = self.pred_flow(self.xs_t, self.ys_t)
-        pred_flow = torch.stack([x_new, y_new], dim=-1)
-        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
-        disp = pred_flow - grid
+        disp = self.pred_flow()
         epe = torch.linalg.norm(disp - self.gt_flow, dim=-1)
         return epe.mean().item()
     
 
     def angular_error(self):
-        x_new, y_new = self.pred_flow(self.xs_t, self.ys_t)
-        pred_flow = torch.stack([x_new, y_new], dim=-1)
-        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
-        disp = pred_flow - grid  # Convert absolute coordinates to displacement
+        disp = self.pred_flow()
         u, v   = disp[..., 0], disp[..., 1]
         ug, vg = self.gt_flow[..., 0], self.gt_flow[..., 1]
 
@@ -310,12 +352,7 @@ class AffineFlowWithLocalOrigins(Flow):
         cv.imshow("Image2", convert_torch_to_cv(self.image2))
         
         # Compute predicted absolute flow using the learned affine transform with local origins
-        x_new, y_new = self.pred_flow(self.xs_t, self.ys_t)
-        pred_flow_abs = torch.stack([x_new, y_new], dim=-1)
-        
-        # Convert to displacement by subtracting the original pixel grid
-        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
-        disp = pred_flow_abs - grid
+        disp = self.pred_flow()
         disp_np = disp.detach().cpu().numpy()
         
         # Visualize the predicted displacement field (refined flow)
@@ -341,11 +378,7 @@ class AffineFlowWithLocalOrigins(Flow):
 
         param_grid = self.params[:,:,:6].detach().clone()  # [H, W, 6]
         H, W = param_grid.shape[:2]
-        # param_grid[...,0] = 1
-        # param_grid[...,1] = 0.0
         param_grid[...,2] = 0.0
-        # param_grid[...,3] = 0.0
-        # param_grid[...,4] = 1
         param_grid[...,5] = 0.0
 
         # Reshape into batch of 2x3 matrices
