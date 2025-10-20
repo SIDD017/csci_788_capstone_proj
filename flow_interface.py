@@ -322,6 +322,96 @@ class AffineFlowWithLocalOrigins(Flow):
                             charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
         return tv_terms
     
+
+    # def smoothness_tv(self):
+    #     """
+    #     Compute a geodesic distance–based smoothness term for the local affine parameters.
+    #     For neighboring pixels, we form the relative transformation A_rel = A1⁻¹ A2
+    #     (where A1 and A2 are the 2x2 affine sub-matrices of self.params for adjacent pixels)
+    #     and then compute the geodesic distance as:
+    #          d_geo = ∥log(A1⁻¹ A2)∥_F.
+    #     The final loss is the average over horizontal and vertical neighbors.
+    #     """
+
+    #     def batch_logm_2x2(A):
+    #         """
+    #         Compute the matrix logarithm for a batch of 2x2 matrices A.
+    #         A: Tensor of shape (N, 2, 2)
+    #         Returns: Tensor of shape (N, 2, 2) where each matrix is the logarithm of A.
+            
+    #         Uses the closed-form solution:
+    #         log(A) = ( log(λ1)*(A - λ2 I) - log(λ2)*(A - λ1 I) ) / (λ1 - λ2),
+    #         where λ1 and λ2 are the eigenvalues of A.
+    #         Assumes A is close to identity so the logarithm remains real.
+    #         """
+    #         # A has shape (N, 2, 2)
+    #         a = A[:, 0, 0]
+    #         b = A[:, 0, 1]
+    #         c = A[:, 1, 0]
+    #         d = A[:, 1, 1]
+    #         trace = a + d
+    #         detA = a*d - b*c
+    #         # Compute discriminant
+    #         discrim = torch.sqrt(trace*trace - 4*detA)
+    #         # Eigenvalues via quadratic formula
+    #         lambda1 = (trace + discrim) / 2.0
+    #         lambda2 = (trace - discrim) / 2.0
+
+    #         # Avoid division by zero (if eigenvalues are very similar)
+    #         eps = 1e-8
+    #         diff = lambda1 - lambda2 + eps
+    #         log_lambda1 = torch.log(lambda1 + eps)
+    #         log_lambda2 = torch.log(lambda2 + eps)
+
+    #         I = torch.eye(2, device=A.device, dtype=A.dtype).unsqueeze(0).expand(A.shape[0], -1, -1)
+    #         A_minus_lambda2I = A - lambda2.view(-1, 1, 1) * I
+    #         A_minus_lambda1I = A - lambda1.view(-1, 1, 1) * I
+    #         logA = (log_lambda1.view(-1, 1, 1) * A_minus_lambda2I - log_lambda2.view(-1, 1, 1) * A_minus_lambda1I) / diff.view(-1, 1, 1)
+    #         return logA
+
+
+    #     # Get image height and width from self.params shape (H, W, 8)
+    #     H, W, _ = self.params.shape
+        
+    #     # Extract the 2x2 affine parts and reshape to (H, W, 2, 2)
+    #     A = self.params[..., [0, 1, 3, 4]].view(H, W, 2, 2)
+    #     loss = 0.0
+    #     count = 0
+
+    #     # Horizontal neighbors: each pixel compared with its right neighbor.
+    #     if W > 1:
+    #         A_left = A[:, :-1, :, :]         # shape: (H, W-1, 2, 2)
+    #         A_right = A[:, 1:, :, :]          # shape: (H, W-1, 2, 2)
+    #         A_left_inv = torch.linalg.inv(A_left)
+    #         A_rel = torch.matmul(A_left_inv, A_right)  # shape: (H, W-1, 2, 2)
+    #         # Flatten for batch processing
+    #         N_h = A_rel.shape[0] * A_rel.shape[1]
+    #         A_rel_flat = A_rel.view(N_h, 2, 2)
+    #         log_A_flat = batch_logm_2x2(A_rel_flat)
+    #         log_A = log_A_flat.view(A_rel.shape)
+    #         d_geo_horz = torch.linalg.norm(log_A, ord='fro', dim=(-2, -1))
+    #         loss += d_geo_horz.mean()
+    #         count += 1
+
+    #     # Vertical neighbors: each pixel compared with its bottom neighbor.
+    #     if H > 1:
+    #         A_top = A[:-1, :, :, :]          # shape: (H-1, W, 2, 2)
+    #         A_bottom = A[1:, :, :, :]        # shape: (H-1, W, 2, 2)
+    #         A_top_inv = torch.linalg.inv(A_top)
+    #         A_rel_vert = torch.matmul(A_top_inv, A_bottom)
+    #         N_v = A_rel_vert.shape[0] * A_rel_vert.shape[1]
+    #         A_rel_vert_flat = A_rel_vert.view(N_v, 2, 2)
+    #         log_A_vert_flat = batch_logm_2x2(A_rel_vert_flat)
+    #         log_A_vert = log_A_vert_flat.view(A_rel_vert.shape)
+    #         d_geo_vert = torch.linalg.norm(log_A_vert, ord='fro', dim=(-2, -1))
+    #         loss += d_geo_vert.mean()
+    #         count += 1
+
+    #     if count > 0:
+    #         loss = loss / count
+
+    #     return {"uv": loss}
+    
     def get_origin_reg(self):
         aff = self.params
         origin_reg = torch.mean((aff[...,6] - self.xs_t)**2 + (aff[...,7] - self.ys_t)**2)
