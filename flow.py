@@ -1,26 +1,20 @@
 from abc import ABC, abstractmethod
-import numpy as np
-import cv2 as cv
-import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 
-from init_flow import calculate_initial_flow
-from refine_utils import np_im_to_torch, charbonnier_loss, convert_torch_to_cv
-from utils import uint8_to_float32, visualize_flow_hsv, visualize_gt_flow_hsv
+from flow_init import calculate_initial_flow
+from refine import charbonnier_loss
+from utils import *
 
 # Abstract base class for optical flow (2 Param lucas kanade and 6/8 param affine)
 class Flow(ABC):
-    def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
+    def __init__(self, image1_path, image2_path, gtimage_path, init_params):
+        image1 = cv.imread(str(image1_path), cv.IMREAD_GRAYSCALE)
+        image2 = cv.imread(str(image2_path), cv.IMREAD_GRAYSCALE)
+        gt_flow = read_flo_file(gtimage_path)
         # Calculate the initial flow and setup everything to be torch tensors
         # on device, ready for refinement
-        self.init_flow = calculate_initial_flow(image1, 
-                                             image2, 
-                                             init_params["levels"], 
-                                             init_params["window_size"], 
-                                             init_params["alpha"], 
-                                             init_params["goodness_threshold"], 
-                                             use_opencv)
+        self.init_flow = calculate_initial_flow(image1, image2, init_params)
         self.image1 = np_im_to_torch(uint8_to_float32(image1)).to(init_params.get("device", "cpu"))
         self.image2 = np_im_to_torch(uint8_to_float32(image2)).to(init_params.get("device", "cpu"))
         self.gt_flow = torch.from_numpy(gt_flow.astype(np.float32)).to(init_params.get("device", "cpu"))
@@ -30,153 +24,6 @@ class Flow(ABC):
                             "loss_log": [],
                             "epe_log": [],
                             "angular_log": []}
-
-    # Warp an image using the flow field
-    @abstractmethod
-    def warped_coords(self, xs, ys):
-        pass
-
-    @abstractmethod
-    def pred_flow(self):
-        pass
-
-    @abstractmethod
-    def smoothness_tv(self):
-        pass
-
-    @abstractmethod
-    def get_origin_reg(self):
-        pass
-
-    @abstractmethod
-    def epe_error(self):
-        pass
-
-
-    @abstractmethod
-    def visualize_flow(self):
-        pass
-
-    # Visualize the flow field
-    @abstractmethod
-    def visualize_params(self):
-        pass
-
-
-class CustomLucasKanadeFlow(Flow):
-    def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
-        super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
-        self.log_metrics["uv_tv_log"] = []
-        temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
-        temp = torch.from_numpy(temp).to(init_params.get("device", "cpu"))
-        self.params = temp.clone().requires_grad_(True)
-
-    
-    def warped_coords(self, xs, ys):
-        xw = xs + self.params[...,0]
-        yw = ys + self.params[...,1]
-        return xw, yw
-
-
-    def pred_flow(self):
-        return self.params
-    
-    def smoothness_tv(self):
-        dy = torch.linalg.norm(self.params[1:, :, :] - self.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
-        dx = torch.linalg.norm(self.params[:, 1:, :] - self.params[:, :-1, :], dim=-1)   # H x (W-1) x 2
-        return {"uv": charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()}
-
-    def get_origin_reg(self):
-        return 0.0
-
-    def epe_error(self):
-        epe = torch.linalg.norm(self.params - self.gt_flow, dim=-1)  # H x W
-        return epe.mean().item()
-    
-
-    def angular_error(self):
-        u, v   = self.params[...,0], self.params[...,1]
-        ug, vg = self.gt_flow[...,0], self.gt_flow[...,1]
-        num = u*ug + v*vg
-        epsilon = 1e-8
-        gtmag = torch.sqrt(ug*ug + vg*vg)
-        mask = gtmag > 0.1
-        den = torch.sqrt(u*u + v*v + epsilon) * torch.sqrt(ug*ug + vg*vg + epsilon)
-        ang = torch.acos(torch.clamp(num/den, -1.0, 1.0)).mean().item()
-        return ang
-    
-    def visualize_flow(self):
-        cv.imshow("Image1", convert_torch_to_cv(self.image1))
-        cv.imshow("Image2", convert_torch_to_cv(self.image2))
-        disp = visualize_flow_hsv(self.params.detach().cpu().numpy())
-        cv.imshow("Dense refined flow", disp)
-        display = visualize_flow_hsv(self.init_flow)
-        gt_display = visualize_gt_flow_hsv(self.gt_flow.cpu().numpy())
-        cv.imshow("Optical flow (custom)", display)
-        cv.imshow("Optical flow (ground truth)", gt_display)
-        cv.waitKey(0)
-        cv.destroyAllWindows()
-    
-    def visualize_params(self):
-        pass
-
-
-class AffineFlow(Flow):
-    def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
-        super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
-        self.log_metrics["A_tv_log"] = []
-        self.log_metrics["uv_tv_log"] = []
-        self.log_metrics["origin_tv_log"] = []
-        # Initialize the affine parameters to identity + translation from init flow
-        temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
-        H, W, _ = temp.shape
-        # create a meshgrid for pixel coordinates (note: x = column index, y = row index)
-        ys, xs = np.meshgrid(np.arange(H, dtype=np.float32),
-                            np.arange(W, dtype=np.float32),
-                            indexing="ij")
-        self.params = np.zeros((H, W, 6), dtype=np.float32)
-        self.params[...,0] = 1.0
-        self.params[...,1] = 0.0
-        self.params[...,2] = temp[...,0]
-        self.params[...,3] = 0.0
-        self.params[...,4] = 1.0
-        self.params[...,5] = temp[...,1]
-        self.params = torch.from_numpy(self.params).to(init_params.get("device", "cpu"))
-        self.params = self.params.clone().requires_grad_(True)
-        self.xs_t = torch.from_numpy(xs).to(init_params.get("device", "cpu"))
-        self.ys_t = torch.from_numpy(ys).to(init_params.get("device", "cpu"))
-
-
-    def warped_coords(self, xs, ys):
-        x_new = self.params[...,0]*xs + self.params[...,1]*ys + self.params[...,2]
-        y_new = self.params[...,3]*xs + self.params[...,4]*ys + self.params[...,5]
-        return x_new, y_new
-    
-    def pred_flow(self):
-        x_new, y_new = self.warped_coords(self.xs_t, self.ys_t)
-        warped_coords = torch.stack([x_new, y_new], dim=-1)
-        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
-        return warped_coords - grid
-
-    def smoothness_tv(self):
-        groups = {
-            "A": [0, 1, 3, 4],
-            "uv": [2, 5]
-        }
-        tv_terms = {}
-        for key, indices in groups.items():
-            group = self.params[..., indices]  # use fancy indexing
-            dy = group[1:, :, :] - group[:-1, :, :]
-            dx = group[:, 1:, :] - group[:, :-1, :]
-            tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
-                            charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
-        return tv_terms
-        # dy = self.params[1:, :, :] - self.params[:-1, :, :]   # (H-1) x W x 6
-        # dx = self.params[:, 1:, :] - self.params[:, :-1, :]   # H x (W-1) x 6
-        # return {"uv":charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()}
-    
-    def get_origin_reg(self):
-        return 0.0
     
     def epe_error(self):
         disp = self.pred_flow()
@@ -196,84 +43,228 @@ class AffineFlow(Flow):
         den = pred_mag * gt_mag
         ang = torch.acos(torch.clamp(num / den, -1.0, 1.0))
         return ang.mean().item()
-
-
+    
+    # Helper funtion to debug and visualize flow
     def visualize_flow(self):
-        # Display the original images
         cv.imshow("Image1", convert_torch_to_cv(self.image1))
         cv.imshow("Image2", convert_torch_to_cv(self.image2))
-        
-        # Compute predicted absolute flow using the learned affine transform
         disp = self.pred_flow()
         disp_np = disp.detach().cpu().numpy()
-        
-        # Visualize the predicted displacement field (refined flow)
         disp_hsv = visualize_flow_hsv(disp_np)
         cv.imshow("Dense refined flow", disp_hsv)
-        
-        # Visualize the initial flow and ground truth for comparison
         disp_init = visualize_flow_hsv(self.init_flow)
         gt_disp = visualize_gt_flow_hsv(self.gt_flow.cpu().numpy())
         cv.imshow("Optical flow (initial)", disp_init)
         cv.imshow("Optical flow (ground truth)", gt_disp)
-        
         cv.waitKey(0)
         cv.destroyAllWindows()
+
+    # Warp an image using the flow field
+    @abstractmethod
+    def warped_coords(self, xs, ys):
+        pass
+
+    @abstractmethod
+    def pred_flow(self):
+        pass
+
+    @abstractmethod
+    def smoothness_tv(self):
+        pass
+
+    # Visualize the flow field
+    @abstractmethod
+    def visualize_params(self):
+        pass
+
+
+class CustomLucasKanadeFlow(Flow):
+    def __init__(self, image1, image2, gt_flow, init_params):
+        super().__init__(image1, image2, gt_flow, init_params)
+        self.log_metrics["uv_tv_log"] = []
+        temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
+        temp = torch.from_numpy(temp).to(init_params.get("device", "cpu"))
+        self.params = temp.clone().requires_grad_(True)
+    
+    def warped_coords(self, xs, ys):
+        xw = xs + self.params[...,0]
+        yw = ys + self.params[...,1]
+        return xw, yw
+
+    def pred_flow(self):
+        return self.params
+    
+    def smoothness_tv(self):
+        dy = torch.linalg.norm(self.params[1:, :, :] - self.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
+        dx = torch.linalg.norm(self.params[:, 1:, :] - self.params[:, :-1, :], dim=-1)   # H x (W-1) x 2
+        return {"uv": charbonnier_loss(dy, 1e-3).mean() + charbonnier_loss(dx, 1e-3).mean()}
+    
+    def visualize_params(self):
+        pass
+
+
+class AffineFlow(Flow):
+    def __init__(self, image1, image2, gt_flow, init_params):
+        super().__init__(image1, image2, gt_flow, init_params)
+        self.log_metrics["A_tv_log"] = []
+        self.log_metrics["uv_tv_log"] = []
+        self.log_metrics["A_det_tv_log"] = []
+        # Initialize the affine parameters to identity + translation from init flow
+        temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
+        H, W, _ = temp.shape
+        # create a meshgrid for pixel coordinates (note: x = column index, y = row index)
+        ys, xs = np.meshgrid(np.arange(H, dtype=np.float32),
+                            np.arange(W, dtype=np.float32),
+                            indexing="ij")
+        self.params = np.zeros((H, W, 6), dtype=np.float32)
+        self.params[...,0] = 0.0
+        self.params[...,1] = 0.0
+        self.params[...,2] = temp[...,0]
+        self.params[...,3] = 0.0
+        self.params[...,4] = 0.0
+        self.params[...,5] = temp[...,1]
+        self.params = torch.from_numpy(self.params).to(init_params.get("device", "cpu"))
+        self.params = self.params.clone().requires_grad_(True)
+        self.xs_t = torch.from_numpy(xs).to(init_params.get("device", "cpu"))
+        self.ys_t = torch.from_numpy(ys).to(init_params.get("device", "cpu"))
+        
+    def warped_coords(self, xs, ys):
+        x_new = xs + self.params[...,2]
+        y_new = ys + self.params[...,5]
+        return x_new, y_new
+    
+    def pred_flow(self):
+        x_new, y_new = self.warped_coords(self.xs_t, self.ys_t)
+        warped_coords = torch.stack([x_new, y_new], dim=-1)
+        grid = torch.stack([self.xs_t, self.ys_t], dim=-1)
+        return warped_coords - grid
+        
+    def smoothness_tv(self):
+        # uv and A
+        flow = self.params[..., [2, 5]]
+        A = torch.stack([self.params[..., 0:2], self.params[..., 3:5]], dim=-2)  # [H, W, 2, 2]
+
+        # NOTE: downweighting flow smoothness at edges (to avoid blurriness)
+        I = self.image1.squeeze(0).squeeze(0)
+        I_x = I[:, 1:] - I[:, :-1]  # [H, W-1]
+        I_y = I[1:, :] - I[:-1, :]  # [H-1, W]
+        edge_weight_x = torch.exp(-torch.abs(I_x) / 0.1)  # [H, W-1]
+        edge_weight_y = torch.exp(-torch.abs(I_y) / 0.1)  # [H-1, W]
+        
+        # expected_flow[i+1,j] = flow[i,j] + A[i,j] @ [1, 0]
+        expected_flow_right = flow[:, :-1] + A[:, :-1, :, 0]
+        flow_diff_x = flow[:, 1:] - expected_flow_right
+        # expected_flow[i,j+1] = flow[i,j] + A[i,j] @ [0, 1]
+        expected_flow_down = flow[:-1, :] + A[:-1, :, :, 1]
+        flow_diff_y = flow[1:, :] - expected_flow_down
+        uv_tv = (edge_weight_x * charbonnier_loss(torch.linalg.norm(flow_diff_x, dim=-1), 1e-3)).mean() + \
+                (edge_weight_y * charbonnier_loss(torch.linalg.norm(flow_diff_y, dim=-1), 1e-3)).mean()
+        
+        # A smoothness with edge weights
+        A_diff_x = A[:, 1:] - A[:, :-1]  # [H, W-1, 2, 2]
+        A_diff_y = A[1:, :] - A[:-1, :]  # [H-1, W, 2, 2]
+        # Flatten last two dims for norm computation
+        A_norm_x = torch.linalg.norm(A_diff_x.reshape(A_diff_x.shape[0], A_diff_x.shape[1], 4), dim=-1)  # [H, W-1]
+        A_norm_y = torch.linalg.norm(A_diff_y.reshape(A_diff_y.shape[0], A_diff_y.shape[1], 4), dim=-1)  # [H-1, W]
+        A_tv = (edge_weight_x * charbonnier_loss(A_norm_x, 1e-3)).mean() + \
+            (edge_weight_y * charbonnier_loss(A_norm_y, 1e-3)).mean()
+        
+        # frobenius norm of A - I 
+        # I = torch.eye(2, device=A.device, dtype=A.dtype).view(1,1,2,2)
+        # A_diff = A - I
+        # A_mag = charbonnier_loss(torch.linalg.norm(A_diff.reshape(-1, 4), dim=-1), 1e-3).mean()
+        A_frob_norm = torch.linalg.norm(A.reshape(-1, 4), dim=-1)  # [H*W]
+        A_det = charbonnier_loss(A_frob_norm, 1e-3).mean()
+
+        return {"A": A_tv, "uv": uv_tv, "A_det": A_det}
     
 
     def visualize_params(self):
-         # Make small reference patch (letter R)
+        # Make small reference patch (letter R)
         ref_np = np.zeros((16, 16), dtype=np.uint8)
         cv.putText(ref_np, "R", (1, 14), cv.FONT_HERSHEY_SIMPLEX, 0.5, 255, 1, cv.LINE_AA)
-        ref = torch.tensor(ref_np, dtype=torch.float32, device="cuda") / 255.0  # [H,W] float
+        ref = torch.tensor(ref_np, dtype=torch.float32, device=self.params.device) / 255.0  # [H,W] float
         ref = ref.unsqueeze(0).unsqueeze(0)  # [N=1, C=1, H, W]
         ref_h, ref_w = ref.shape[2:]
 
         param_grid = self.params.detach().clone()  # [H, W, 6]
         H, W = param_grid.shape[:2]
-        param_grid[...,2] = 0.0
-        param_grid[...,5] = 0.0
-
-        # Reshape into batch of 2x3 matrices
-        M = param_grid.view(-1, 2, 3)  # [H*W, 2, 3]
+        
+        # Extract A matrix components (for visualization of local linear model)
+        # A = [[a11, a12], [a21, a22]] from params[..., [0,1,3,4]]
+        A = torch.stack([param_grid[..., 0:2], param_grid[..., 3:5]], dim=-2)  # [H, W, 2, 2]
+        
+        # For visualizing A, we'll apply it to the reference patch
+        # Create 2x3 affine matrices: [A | 0] (no translation for this viz)
+        M = torch.zeros(H * W, 2, 3, device=self.params.device)
+        M[:, :, :2] = A.reshape(-1, 2, 2)  # Set the A part
+        M[:, :, 2] = 0  # No translation
+        
+        # Add identity to make it I + A (so zero A = identity transform)
+        M[:, 0, 0] += 1.0  # Add identity to top-left
+        M[:, 1, 1] += 1.0  # Add identity to bottom-right
 
         # Build normalized sampling grids for each affine transform
-        # F.affine_grid generates coordinates for grid_sample
-        grids = F.affine_grid(M, size=(H*W, 1, ref_h, ref_w), align_corners=False)  # [H*W, H, W, 2]
+        grids = F.affine_grid(M, size=(H*W, 1, ref_h, ref_w), align_corners=False)  # [H*W, ref_h, ref_w, 2]
 
         # Apply all warps in parallel
-        warped = F.grid_sample(ref.expand(H*W, -1, -1, -1), grids, align_corners=False)  # [H*W, 1, h, w]
+        warped = F.grid_sample(ref.expand(H*W, -1, -1, -1), grids, align_corners=False)  # [H*W, 1, ref_h, ref_w]
 
         # Tile into big canvas
-        warped = warped.squeeze(1)  # [H*W, h, w]
-        canvas = warped.view(H, W, ref_h, ref_w).permute(0,2,1,3).reshape(H*ref_h, W*ref_w)
+        warped = warped.squeeze(1)  # [H*W, ref_h, ref_w]
+        canvas = warped.view(H, W, ref_h, ref_w).permute(0, 2, 1, 3).reshape(H*ref_h, W*ref_w)
 
+        plt.figure(figsize=(12, 5))
+        
+        plt.subplot(1, 3, 1)
         plt.imshow(canvas.detach().cpu(), cmap="gray")
-        plt.axis("off")                                                                                                                                                                                                                                                                                                                                                                                        
-        plt.show()
-
+        plt.title("A Matrix Visualization (Local Linear Model)\nEach R shows (I+A) transformation")
+        plt.axis("off")
+        
         # Visualize translation parameters (indices 2 and 5)
         translation = self.params[..., [2, 5]].detach().cpu().numpy()  # shape: [H, W, 2]
         translation_hsv = visualize_flow_hsv(translation)
-        cv.imshow("Translation (HSV)", translation_hsv)
-
-        cv.waitKey(0)
-        cv.destroyAllWindows()
-
+        
+        plt.subplot(1, 3, 2)
+        plt.imshow(cv.cvtColor(translation_hsv, cv.COLOR_BGR2RGB))
+        plt.title("Translation (u, v) - HSV Flow Visualization")
+        plt.axis("off")
+        
+        # Visualize Frobenius norm of A (magnitude of local variation)
+        A_frob = torch.linalg.norm(A.reshape(H, W, 4), dim=-1).detach().cpu().numpy()  # [H, W]
+        
+        plt.subplot(1, 3, 3)
+        im = plt.imshow(A_frob, cmap="hot")
+        plt.colorbar(im)
+        plt.title("||A||_F (Magnitude of Local Flow Variation)")
+        plt.axis("off")
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Optional: Show some statistics
+        print(f"Translation stats:")
+        print(f"  u (horizontal): mean={translation[...,0].mean():.3f}, std={translation[...,0].std():.3f}")
+        print(f"  v (vertical): mean={translation[...,1].mean():.3f}, std={translation[...,1].std():.3f}")
+        print(f"A matrix stats:")
+        print(f"  ||A||_F: mean={A_frob.mean():.6f}, max={A_frob.max():.6f}")
+        print(f"  A components: a11={param_grid[...,0].mean().item():.6f}, "
+            f"a12={param_grid[...,1].mean().item():.6f}, "
+            f"a21={param_grid[...,3].mean().item():.6f}, "
+            f"a22={param_grid[...,4].mean().item():.6f}")
 
 
 
 
 class AffineFlowWithLocalOrigins(Flow):
-    def __init__(self, image1, image2, gt_flow, init_params, use_opencv=False):
-        super().__init__(image1, image2, gt_flow, init_params, use_opencv=use_opencv)
+    def __init__(self, image1, image2, gt_flow, init_params):
+        super().__init__(image1, image2, gt_flow, init_params)
         self.log_metrics["A_tv_log"] = []
         self.log_metrics["uv_tv_log"] = []
         self.log_metrics["origin_tv_log"] = []
         # Initialize any additional parameters for affine flow and local origins
         temp = np.nan_to_num(self.init_flow.astype(np.float32), nan=0.0)
         H, W, _ = temp.shape
-        # create a meshgrid for pixel coordinates (note: x = column index, y = row index)
         ys, xs = np.meshgrid(np.arange(H, dtype=np.float32),
                             np.arange(W, dtype=np.float32),
                             indexing="ij")
@@ -321,142 +312,7 @@ class AffineFlowWithLocalOrigins(Flow):
             tv_terms[key] = charbonnier_loss(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
                             charbonnier_loss(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
         return tv_terms
-    
 
-    # def smoothness_tv(self):
-    #     """
-    #     Compute a geodesic distance–based smoothness term for the local affine parameters.
-    #     For neighboring pixels, we form the relative transformation A_rel = A1⁻¹ A2
-    #     (where A1 and A2 are the 2x2 affine sub-matrices of self.params for adjacent pixels)
-    #     and then compute the geodesic distance as:
-    #          d_geo = ∥log(A1⁻¹ A2)∥_F.
-    #     The final loss is the average over horizontal and vertical neighbors.
-    #     """
-
-    #     def batch_logm_2x2(A):
-    #         """
-    #         Compute the matrix logarithm for a batch of 2x2 matrices A.
-    #         A: Tensor of shape (N, 2, 2)
-    #         Returns: Tensor of shape (N, 2, 2) where each matrix is the logarithm of A.
-            
-    #         Uses the closed-form solution:
-    #         log(A) = ( log(λ1)*(A - λ2 I) - log(λ2)*(A - λ1 I) ) / (λ1 - λ2),
-    #         where λ1 and λ2 are the eigenvalues of A.
-    #         Assumes A is close to identity so the logarithm remains real.
-    #         """
-    #         # A has shape (N, 2, 2)
-    #         a = A[:, 0, 0]
-    #         b = A[:, 0, 1]
-    #         c = A[:, 1, 0]
-    #         d = A[:, 1, 1]
-    #         trace = a + d
-    #         detA = a*d - b*c
-    #         # Compute discriminant
-    #         discrim = torch.sqrt(trace*trace - 4*detA)
-    #         # Eigenvalues via quadratic formula
-    #         lambda1 = (trace + discrim) / 2.0
-    #         lambda2 = (trace - discrim) / 2.0
-
-    #         # Avoid division by zero (if eigenvalues are very similar)
-    #         eps = 1e-8
-    #         diff = lambda1 - lambda2 + eps
-    #         log_lambda1 = torch.log(lambda1 + eps)
-    #         log_lambda2 = torch.log(lambda2 + eps)
-
-    #         I = torch.eye(2, device=A.device, dtype=A.dtype).unsqueeze(0).expand(A.shape[0], -1, -1)
-    #         A_minus_lambda2I = A - lambda2.view(-1, 1, 1) * I
-    #         A_minus_lambda1I = A - lambda1.view(-1, 1, 1) * I
-    #         logA = (log_lambda1.view(-1, 1, 1) * A_minus_lambda2I - log_lambda2.view(-1, 1, 1) * A_minus_lambda1I) / diff.view(-1, 1, 1)
-    #         return logA
-
-
-    #     # Get image height and width from self.params shape (H, W, 8)
-    #     H, W, _ = self.params.shape
-        
-    #     # Extract the 2x2 affine parts and reshape to (H, W, 2, 2)
-    #     A = self.params[..., [0, 1, 3, 4]].view(H, W, 2, 2)
-    #     loss = 0.0
-    #     count = 0
-
-    #     # Horizontal neighbors: each pixel compared with its right neighbor.
-    #     if W > 1:
-    #         A_left = A[:, :-1, :, :]         # shape: (H, W-1, 2, 2)
-    #         A_right = A[:, 1:, :, :]          # shape: (H, W-1, 2, 2)
-    #         A_left_inv = torch.linalg.inv(A_left)
-    #         A_rel = torch.matmul(A_left_inv, A_right)  # shape: (H, W-1, 2, 2)
-    #         # Flatten for batch processing
-    #         N_h = A_rel.shape[0] * A_rel.shape[1]
-    #         A_rel_flat = A_rel.view(N_h, 2, 2)
-    #         log_A_flat = batch_logm_2x2(A_rel_flat)
-    #         log_A = log_A_flat.view(A_rel.shape)
-    #         d_geo_horz = torch.linalg.norm(log_A, ord='fro', dim=(-2, -1))
-    #         loss += d_geo_horz.mean()
-    #         count += 1
-
-    #     # Vertical neighbors: each pixel compared with its bottom neighbor.
-    #     if H > 1:
-    #         A_top = A[:-1, :, :, :]          # shape: (H-1, W, 2, 2)
-    #         A_bottom = A[1:, :, :, :]        # shape: (H-1, W, 2, 2)
-    #         A_top_inv = torch.linalg.inv(A_top)
-    #         A_rel_vert = torch.matmul(A_top_inv, A_bottom)
-    #         N_v = A_rel_vert.shape[0] * A_rel_vert.shape[1]
-    #         A_rel_vert_flat = A_rel_vert.view(N_v, 2, 2)
-    #         log_A_vert_flat = batch_logm_2x2(A_rel_vert_flat)
-    #         log_A_vert = log_A_vert_flat.view(A_rel_vert.shape)
-    #         d_geo_vert = torch.linalg.norm(log_A_vert, ord='fro', dim=(-2, -1))
-    #         loss += d_geo_vert.mean()
-    #         count += 1
-
-    #     if count > 0:
-    #         loss = loss / count
-
-    #     return {"uv": loss}
-    
-    def get_origin_reg(self):
-        aff = self.params
-        origin_reg = torch.mean((aff[...,6] - self.xs_t)**2 + (aff[...,7] - self.ys_t)**2)
-        return origin_reg
-
-    def epe_error(self):
-        disp = self.pred_flow()
-        epe = torch.linalg.norm(disp - self.gt_flow, dim=-1)
-        return epe.mean().item()
-    
-
-    def angular_error(self):
-        disp = self.pred_flow()
-        u, v   = disp[..., 0], disp[..., 1]
-        ug, vg = self.gt_flow[..., 0], self.gt_flow[..., 1]
-
-        num = u * ug + v * vg
-        epsilon = 1e-8
-        pred_mag = torch.sqrt(u * u + v * v + epsilon)
-        gt_mag   = torch.sqrt(ug * ug + vg * vg + epsilon)
-        den = pred_mag * gt_mag
-        ang = torch.acos(torch.clamp(num / den, -1.0, 1.0))
-        return ang.mean().item()
-
-    def visualize_flow(self):
-        # Display the original images
-        cv.imshow("Image1", convert_torch_to_cv(self.image1))
-        cv.imshow("Image2", convert_torch_to_cv(self.image2))
-        
-        # Compute predicted absolute flow using the learned affine transform with local origins
-        disp = self.pred_flow()
-        disp_np = disp.detach().cpu().numpy()
-        
-        # Visualize the predicted displacement field (refined flow)
-        disp_hsv = visualize_flow_hsv(disp_np)
-        cv.imshow("Dense refined flow", disp_hsv)
-        
-        # Visualize the initial flow and ground truth for comparison
-        disp_init = visualize_flow_hsv(self.init_flow)
-        gt_disp = visualize_gt_flow_hsv(self.gt_flow.cpu().numpy())
-        cv.imshow("Optical flow (initial)", disp_init)
-        cv.imshow("Optical flow (ground truth)", gt_disp)
-        
-        cv.waitKey(0)
-        cv.destroyAllWindows()
 
     def visualize_params(self):
         # Make small reference patch (letter R)
