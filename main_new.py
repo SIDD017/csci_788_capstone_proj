@@ -50,10 +50,9 @@ def run_pipeline(init_params: dict,
     # initial flow from lk or farneback
     init_flow = initialize_flow(image1_path, image2_path, init_params)
     # build flow object with inital flow
-    flow = Flow2p(input_images["image1"].shape[-2:], device=init_params["device"], init_flow=init_flow)
+    flow = Flow6p(input_images["image1"].shape[-2:], device=init_params["device"], init_flow=init_flow)
     # refinement loop
     refine(flow, input_images, refine_params)
-
     # log / plot
     cv.imshow("Image1", convert_torch_to_cv(input_images["image1"]))
     cv.imshow("Image2", convert_torch_to_cv(input_images["image2"]))

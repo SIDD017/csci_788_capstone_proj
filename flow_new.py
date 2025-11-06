@@ -14,7 +14,7 @@ def gauss_avg(t: torch.Tensor, dim: int = -1):
     return torch.sum(t * wt.view(*new_shape), dim)
 
 
-def sliding_windowa_ar1_helper(t: torch.Tensor, win_size: int, cost_fn):
+def sliding_window_ar1_helper(t: torch.Tensor, win_size: int, cost_fn):
     """Helper function to take a sliding window over a tensor (could be uv, could be b, etc) and
     calculate the weighted average of a robust cost function of differences between a value and
     itd neighborhood
@@ -147,31 +147,91 @@ class Flow2p(BaseFlow):
         return self.params
     
     def ar0_terms(self, cost_fn) -> dict[str, torch.Tensor]:
-        dy = torch.linalg.norm(self.params[1:, :, :] - self.params[:-1, :, :], dim=-1)   # (H-1) x W x 2
-        dx = torch.linalg.norm(self.params[:, 1:, :] - self.params[:, :-1, :], dim=-1)   # H x (W-1) x 2
-        return {"uv": cost_fn(dy, 1e-3).mean() + cost_fn(dx, 1e-3).mean()}
+        return {
+            "uv": cost_fn(torch.linalg.norm(self.uv.flatten(start_dim=2), dim=-1)).mean(),
+        }
     
     def ar1_terms(self, win_size: int, cost_fn):
         return {
-            "uv": sliding_windowa_ar1_helper(self.uv, win_size, cost_fn)
+            "uv": sliding_window_ar1_helper(self.uv, win_size, cost_fn)
         }
     
 
 
 class Flow6p(BaseFlow):
+    @classmethod
+    def init_params(
+        cls, shape_hw, device, initial_flow: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Initialize the parameters for this 6p flow, using initial_flow if provided."""
+        flo = torch.zeros(*shape_hw, 6, device=device)
+        if initial_flow is not None:
+            assert initial_flow.shape == (*shape_hw, 2)
+            flo[..., [2, 5]] = initial_flow
+        return flo
 
     def named_params(self) -> dict[str, torch.Tensor]:
-        """Return named portions of parameters tensor"""
-        return {"A": self.A, "uv": self.uv}
+        """Return named portions of parameters tensor."""
+        return {"uv": self.uv, "b": self.affine_b}
 
     @property
-    def uv(self) -> torch.Tensor:
-        return self.params[..., [2,5]]
-    
+    def uv(self):
+        return self.params[..., [2, 5]]
+
     @property
-    def A(self) -> torch.Tensor:
-        # Unflattening last dimension into 2x2 matrices
-        return self.params[..., [0,1,3,4]].unflatten(-1, (2, 2))
+    def affine_b(self):
+        return self.params[..., [0, 1, 3, 4]].unflatten(-1, (2, 2))
+
+    def _affine_predicted_flow_in_windows(self, win_size: int):
+        # TODO - verify!
+        h, w, _ = self.uv.shape
+        # dx and dy have shape (win_size, win_size)
+        dy, dx = torch.meshgrid(
+            torch.arange(win_size, dtype=torch.float, device=self.device) - win_size // 2,
+            torch.arange(win_size, dtype=torch.float, device=self.device) - win_size // 2,
+            indexing="ij",
+        )
+
+        # delta has shape (win_size, win_size, 2)
+        delta = torch.stack([dx, dy], dim=-1)
+
+        # calculate the B @ delta terms everywhere all at once
+        b_times_delta = torch.einsum("rcij,abj->rciab", self.affine_b, delta)
+
+        affine_flow_in_sliding_windows = self.uv.unsqueeze(-1).unsqueeze(-1) + b_times_delta
+        left, right = win_size//2, w - win_size//2
+        top, bottom = win_size//2, h - win_size//2
+        return affine_flow_in_sliding_windows[top:bottom, left:right, :, :, :]
+
+    def ar0_terms(self, cost_fn):
+        return {
+            "uv": cost_fn(torch.linalg.norm(self.uv.flatten(start_dim=2), dim=-1)).mean(),
+            "b": cost_fn(torch.linalg.norm(self.affine_b.flatten(start_dim=2), dim=-1)).mean(),
+        }
+
+    def ar1_terms(self, win_size: int, cost_fn):
+        # Compute basic 'windowed AR1' for UV and AffineB separately
+        basic_uv_term = sliding_window_ar1_helper(self.uv, win_size, cost_fn)
+        basic_b_term = sliding_window_ar1_helper(self.affine_b, win_size, cost_fn)
+
+        # *Also* compute the fancier term which uses the affine transform to predict small local
+        # differences in uv terms. Compare with sliding_window_ar1_helper above...
+        uv_sliding_window_actual = self.uv.unfold(0, win_size, 1).unfold(1, win_size, 1)
+        uv_sliding_window_predictions = self._affine_predicted_flow_in_windows(win_size)
+        norm_diff = torch.linalg.norm(
+            uv_sliding_window_actual - uv_sliding_window_predictions, dim=2
+        )
+        costs = cost_fn(norm_diff)
+        avg_cost_per_pixel = gauss_avg(gauss_avg(costs, dim=-1), dim=-1)
+        avg_cost = torch.mean(avg_cost_per_pixel)
+
+        # We now have 3 AR1 terms; return all of them so we can decide later which turn out to be
+        # useful
+        return {
+            "uv": basic_uv_term,
+            "b": basic_b_term,
+            "affine_uv": avg_cost,
+        }
     
 
 

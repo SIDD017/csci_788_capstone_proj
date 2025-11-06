@@ -29,32 +29,19 @@ def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params:
         opt.zero_grad()
         I2w = flow.warp_image(input_images["image2"])
         resid = I2w - input_images["image1"]
-        # cv.imshow("im1", convert_torch_to_cv(input_images["image1"].detach().cpu()))
-        # cv.imshow("im2", convert_torch_to_cv(input_images["image2"].detach().cpu()))
-        # cv.imshow("dasdasadadasdasdsada", convert_torch_to_cv(I2w.detach().cpu()))
-        # cv.imshow("fvvbgbghbnghb", convert_torch_to_cv(resid.detach().cpu()))
-        # cv.waitKey(0)
-        # cv.destroyAllWindows()
-        # exit(0)
+
         data = (charbonnier_loss(resid, eps=eps) * w_edge).mean()
         ar0 = flow.ar0_terms(charbonnier_loss)
         ar1 = flow.ar1_terms(3, charbonnier_loss)
 
-        loss = data + lambda_smooth * sum(ar0.values())
+        loss = data + lambda_smooth * sum(ar1.values()) + 0.0001 * sum(ar0.values())
         loss.backward()
         opt.step()
 
         if (t % 50 == 0):
-            # flow.log_metrics["loss_log"].append(loss.item())
             print(loss.item())
             with torch.no_grad():
-                # flow.log_metrics["data_loss_log"].append(data.item())
-                # flow.log_metrics["smoothness_loss_log"].append(sum(tv.values()).item())
                 print("epe : ", Metrics.epe(input_images["gtimage"], flow.uv))
-                # flow.log_metrics["epe_log"].append(epe)
                 print("ang error : ", Metrics.angular_error(input_images["gtimage"], flow.uv))
-                # flow.log_metrics["angular_log"].append(ang)
-                # for k, v in tv.items():
-                #     flow.log_metrics[f"{k}_tv_log"].append(v.item())
 
             # mlflow.log_metrics({k: lst[-1] for k, lst in flow.log_metrics.items()}, step=t)
