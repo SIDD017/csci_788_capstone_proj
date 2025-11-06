@@ -117,7 +117,9 @@ class BaseFlow(ABC):
 
 
     def serialize(self):
-        return {"xs": self.xs, "ys": self.ys, "params":self.params}
+        return {"xs": self.xs, 
+                "ys": self.ys, 
+                "params":self.params}
     
     def deserialize(self, data):
         self.xs  = data["xs"]

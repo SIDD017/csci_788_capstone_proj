@@ -2,12 +2,19 @@ import torch
 from flow_new import BaseFlow, Metrics
 import torch.nn.functional as F
 import cv2 as cv
-
-from utils import convert_torch_to_cv
-
+import mlflow
 
 def charbonnier_loss(x, eps=1e-3):
     return torch.sqrt(x*x + eps*eps)
+
+
+def init_log_metrics():
+    return {"data_log": [],
+            "ar0_log": [],
+            "ar1_log": [],
+            "loss_log": [],
+            "epe_log": [],
+            "angular_log": []}
 
 
 def sobel_magnitude(t):
@@ -19,6 +26,7 @@ def sobel_magnitude(t):
 
 
 def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params: dict):
+    log_metrics = init_log_metrics()
     lambda_smooth = refine_params.get("lambda_smooth", 0.1)
     eps = refine_params.get("eps", 1e-3)
     w_edge = 1.0 / (1.0 + refine_params.get("edge_beta", 20.0) * sobel_magnitude(input_images["image1"]))
@@ -39,9 +47,15 @@ def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params:
         opt.step()
 
         if (t % 50 == 0):
+            print("\nIteration : ", t)
             print(loss.item())
             with torch.no_grad():
-                print("epe : ", Metrics.epe(input_images["gtimage"], flow.uv))
-                print("ang error : ", Metrics.angular_error(input_images["gtimage"], flow.uv))
-
-            # mlflow.log_metrics({k: lst[-1] for k, lst in flow.log_metrics.items()}, step=t)
+                log_metrics["data_log"].append(data.item())
+                log_metrics["ar0_log"].append(sum(ar0.values()).item())
+                log_metrics["ar1_log"].append(sum(ar1.values()).item())
+                log_metrics["loss_log"].append(loss.item())
+                log_metrics["epe_log"].append(Metrics.epe(input_images["gtimage"], flow.uv))
+                log_metrics["angular_log"].append(Metrics.angular_error(input_images["gtimage"], flow.uv))
+                print("epe : ", log_metrics["epe_log"][-1])
+                print("ang error : ", log_metrics["angular_log"][-1])
+            mlflow.log_metrics({k: lst[-1] for k, lst in log_metrics.items()}, step=t)
