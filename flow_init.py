@@ -1,4 +1,6 @@
+from pathlib import Path
 from utils import *
+from abc import abstractmethod, ABC
 
 # Helper functions
 def resize_for_pyramid(image, levels):
@@ -174,3 +176,12 @@ def calculate_initial_flow(image1, image2, init_params):
     flow = (forward_flow - reverse_flow) / 2
     flow[is_bad_flow_estimate] = np.nan
     return flow
+
+
+def initialize_flow(image1_path, image2_path, init_params):
+    """Return initialized optical flow as torch tensor"""
+    image1 = cv.imread(str(image1_path), cv.IMREAD_GRAYSCALE)
+    image2 = cv.imread(str(image2_path), cv.IMREAD_GRAYSCALE)
+    flow = calculate_initial_flow(image1, image2, init_params)
+    flow = np.nan_to_num(flow.astype(np.float32), nan=0.0)
+    return torch.from_numpy(flow).to(init_params.get("device", "cpu")) 

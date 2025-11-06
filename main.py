@@ -33,7 +33,10 @@ def run_pipeline(init_params: dict,
     print(flow.params[..., 0:2], "\n")
     print(flow.params[..., 3:5], "\n")
 
-    # flow.visualize_params()
+    # TODO - store the refined/predicted flow values (not visualization) as a file (np.savez, .flo, whatever)
+    # TODO - also store the final state of the model itself (uv, A, etc) as artifacts
+
+    flow.visualize_params()
 
 
 def main():

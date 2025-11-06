@@ -1,8 +1,9 @@
 import mlflow
 import torch
 import torch.nn.functional as F
+import cv2 as cv
 
-from utils import warp_image_with_flow
+from utils import warp_image_with_flow, convert_torch_to_cv
 
 
 def charbonnier_loss(x, eps=1e-3):
@@ -35,6 +36,11 @@ def refine_flow(
         opt.zero_grad()
         I2w = warp_image_with_flow(flow)
         resid = I2w - flow.image1
+        cv.imshow("dasdasadadasdasdsada", convert_torch_to_cv(I2w.detach().cpu()))
+        cv.imshow("fvvbgbghbnghb", convert_torch_to_cv(resid.detach().cpu()))
+        cv.waitKey(0)
+        cv.destroyAllWindows()
+        exit(0)
         data = (charbonnier_loss(resid, eps=eps) * w_edge).mean()
         tv = flow.smoothness_tv()
 
