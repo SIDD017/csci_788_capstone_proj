@@ -1,38 +1,55 @@
+import ast
 import cv2 as cv
 import numpy as np
-import mlflow
+import torch
 
-import flow
-from utils import convert_torch_to_cv, visualize_flow_hsv, visualize_gt_flow_hsv, warp_image_with_flow
+from utils import convert_torch_to_cv, visualize_flow_hsv, visualize_gt_flow_hsv
 
-def log_artifacts():
-    cv.imshow("Image1", convert_torch_to_cv(flow.image1))
-    cv.imshow("Image2", convert_torch_to_cv(flow.image2))
-    disp = flow.pred_flow()
+def disp_images(flow_uv, input_images):
+    cv.imshow("Image1", convert_torch_to_cv(input_images["image1"]))
+    cv.imshow("Image2", convert_torch_to_cv(input_images["image2"]))
+    disp = flow_uv
     disp_np = disp.detach().cpu().numpy()
     disp_hsv = visualize_flow_hsv(disp_np)
     cv.imshow("Dense refined flow", disp_hsv)
-    disp_init = visualize_flow_hsv(flow.init_flow)
-    gt_disp = visualize_gt_flow_hsv(flow.gt_flow.cpu().numpy())
-    cv.imshow("Optical flow (initial)", disp_init)
+    gt_disp = visualize_gt_flow_hsv(input_images["gtimage"].cpu().numpy())
     cv.imshow("Optical flow (ground truth)", gt_disp)
     cv.waitKey(0)
     cv.destroyAllWindows()
 
 
-def log_mlflow_images(flow):
-    ''' Log images to MLflow '''
-    flow_refined = flow.pred_flow().detach().cpu().numpy()
-    I2_warp = warp_image_with_flow(flow).squeeze().detach().cpu().numpy()
-    # Convert I2_warp to uint8 (assuming it's in [0, 1] range)
-    I2_warp_uint8 = (np.clip(I2_warp, 0, 1) * 255).astype(np.uint8)
-    result_img = {"I2_warp": I2_warp_uint8, 
-                  "image1": convert_torch_to_cv(flow.image1), 
-                  "image2": convert_torch_to_cv(flow.image2),
-                  "flow": visualize_flow_hsv(flow_refined), 
-                  "init_flow": visualize_flow_hsv(flow.init_flow),
-                  "gt_flow": visualize_gt_flow_hsv(flow.gt_flow.cpu().numpy())}
-    for name, img in result_img.items():
-        plot_title = f"{name}.png"
-        cv.imwrite(plot_title, img)
-        mlflow.log_artifact(plot_title, artifact_path="outputs")
+if __name__ == "__main__":
+    """given an exp name,get latest run and load in the logged images and display them"""
+    import mlflow
+    from pathlib import Path
+    exp_name = "2p_10k_new_test"
+    mlflow.set_tracking_uri("file:" + str(Path.cwd() / "mlruns"))
+    mlflow.set_experiment(exp_name)
+    client = mlflow.tracking.MlflowClient()
+    experiment = client.get_experiment_by_name(exp_name)
+    runs = client.search_runs(experiment.experiment_id, order_by=["attributes.start_time DESC"], max_results=1)
+    run = runs[0]
+    artifacts = client.list_artifacts(run.info.run_id, path="outputs")
+    logged_images = {}
+    refined_flow_params = {}
+    for artifact in artifacts:
+        if artifact.path.endswith("log_images.json"):
+            local_path = client.download_artifacts(run.info.run_id, artifact.path)
+            import json
+            with open(local_path, 'r') as f:
+                logged_images = json.load(f)
+        elif artifact.path.endswith("refined_flow_params.json"):
+            local_path = client.download_artifacts(run.info.run_id, artifact.path)
+            import json
+            with open(local_path, 'r') as f:
+                refined_flow_params = json.load(f)
+    # reconstruct tensors from strings
+    for k, v in logged_images.items():
+        if isinstance(v, str):
+            v = ast.literal_eval(v)
+        logged_images[k] = torch.tensor(np.array(v)).unsqueeze(0)
+    for k, v in refined_flow_params.items():
+        if isinstance(v, str):
+            v = ast.literal_eval(v)
+        refined_flow_params[k] = torch.tensor(np.array(v)).unsqueeze(0)
+    disp_images(refined_flow_params["params"], logged_images)

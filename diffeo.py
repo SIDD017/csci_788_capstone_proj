@@ -1,3 +1,7 @@
+import numpy as np
+from flow import Flow6p
+import torch
+
 def create_diffeomorphism_mask(flow: Flow6p, threshold: float = -0.01) -> np.ndarray:
     """
     Create a mask showing where diffeomorphism breaks down based on the Jacobian determinant.
