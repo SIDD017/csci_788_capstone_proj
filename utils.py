@@ -1,55 +1,76 @@
-import argparse
 from pathlib import Path
 import cv2 as cv
 import numpy as np
 import struct
+import torch.nn.functional as F
+
+import torch
+
+def _flatten_dict(d: dict, key_sep="_") -> dict:
+    """Flattens a nested dictionary."""
+    out = {}
+
+    def flatten(x: dict, name: str = ""):
+        if isinstance(x, dict):
+            for a in x:
+                flatten(x[a], name + a + key_sep)
+        else:
+            if name[:-1] in out:
+                raise ValueError(
+                    f"Duplicate key created during flattening: {name[:-1]}"
+                )
+            out[name[:-1]] = x
+
+    flatten(d)
+    return out
 
 
-def process_args():
-    parser = argparse.ArgumentParser(description="Two-frame optical flow")
-    parser.add_argument("image1", help="First image", type=Path)
-    parser.add_argument("image2", help="Second image", type=Path)
-    parser.add_argument("gtimage", help="Ground truth flow file", type=Path)
-    parser.add_argument("--levels", help="Number of pyramid levels", type=int, default=5)
-    parser.add_argument("--window_size", help="Window size", type=int, default=7)
-    parser.add_argument("--alpha", help="Regularization parameter", type=float, default=1e-3)
-    parser.add_argument("--use_affine", help="Use affine refinement or translation", type=bool, default=False)
-    parser.add_argument("--opencv_init", help="Calculate initial flow using opencv method", type=bool, default=False)
-    parser.add_argument(
-        "--goodness-threshold",
-        help="Mismatch threshold for forward/reverse flow to be 'good'",
-        type=float,
-        default=2.0,
-    )
-    args = parser.parse_args()
-
-    # Read the images
-    args.image1 = uint8_to_float32(cv.imread(str(args.image1), cv.IMREAD_GRAYSCALE))
-    args.image2 = uint8_to_float32(cv.imread(str(args.image2), cv.IMREAD_GRAYSCALE))
-
-    #TODO: Assert checks = shape, dims, types, etc
-    return args
-
-
-def visualize_flow_hsv(flow_uv, max_magnitude = None):
-    nan_mask = np.any(np.isnan(flow_uv), axis=2)
-    flow_uv[nan_mask] = 0
-    magnitude = np.linalg.norm(flow_uv, axis=2)
-    if max_magnitude is None:
-        max_magnitude = np.max(magnitude)
-    angle = np.arctan2(-flow_uv[..., 1], -flow_uv[..., 0])
-    hsv = np.zeros(flow_uv.shape[:2] + (3,), dtype=np.uint8)
-    hsv[..., 0] = (angle + np.pi) * 180 / np.pi / 2
-    hsv[..., 1] = np.clip(magnitude / max_magnitude * 255, 0, 255).astype(np.uint8)
-    hsv[..., 2] = 255
-    hsv[nan_mask, :] = 0
-    return cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
+def np_im_to_torch(image_np):
+    # TODO - convert to float if needed
+    return torch.from_numpy(np.atleast_3d(image_np)).permute(2,0,1).unsqueeze(0)
 
 
 def uint8_to_float32(image):
     return image.astype(np.float32) / 255.0
 
 
+def convert_torch_to_cv(image_tensor):
+    # image_tensor shape is [1, C, H, W]
+    img_np = image_tensor.cpu().numpy()[0]           # shape: [C, H, W]
+    img_np = np.transpose(img_np, (1, 2, 0))           # shape: [H, W, C]
+    # If single channel, convert to 2D
+    if img_np.shape[2] == 1:
+        img_np = img_np[:, :, 0]
+    # Assume image data is in [0,1] float range; scale to [0,255] and convert to uint8
+    if img_np.dtype != np.uint8:
+        img_np = np.clip(img_np, 0, 1)
+        img_np = (img_np * 255).astype(np.uint8)
+    return img_np
+
+
+def debug_edge_weighting(w_edge):
+    v_edge = w_edge.clone().cpu().numpy()[0,0]
+    v_edge = (np.clip(v_edge, 0, 1) * 255).astype(np.uint8)
+    cv.imshow("downweight edge", v_edge)
+    cv.waitKey(0)
+    cv.destroyAllWindows()
+    exit(0)
+
+
+def warp_image_with_flow(flow, image=None):
+    if image is None:
+        image = flow.image2
+    B, C, H, W = image.shape
+    dev, dt = image.device, image.dtype
+    ys, xs = torch.meshgrid(torch.arange(H, device=dev),
+                            torch.arange(W, device=dev), indexing="ij")
+    x_new, y_new = flow.warped_coords(xs, ys)
+    # Convert to [-1,1] range for grid_sample
+    gx = (x_new / (W - 1)) * 2 - 1
+    gy = (y_new / (H - 1)) * 2 - 1
+    # Make size (1,H,W,2), expected by grid_sample
+    grid = torch.stack([gx, gy], -1).unsqueeze(0)
+    return F.grid_sample(image, grid, align_corners=True, mode="bilinear", padding_mode="border")
 
 def read_flo_file(filepath):
     with open(filepath, 'rb') as f:
@@ -65,6 +86,20 @@ def read_flo_file(filepath):
         flow = np.array(flow_data, dtype=np.float32).reshape(height, width, 2)
     return flow
 
+
+def visualize_flow_hsv(flow_uv, max_magnitude = None):
+    nan_mask = np.any(np.isnan(flow_uv), axis=2)
+    flow_uv[nan_mask] = 0
+    magnitude = np.linalg.norm(flow_uv, axis=2)
+    if max_magnitude is None:
+        max_magnitude = np.max(magnitude)
+    angle = np.arctan2(-flow_uv[..., 1], -flow_uv[..., 0])
+    hsv = np.zeros(flow_uv.shape[:2] + (3,), dtype=np.uint8)
+    hsv[..., 0] = (angle + np.pi) * 180 / np.pi / 2
+    hsv[..., 1] = np.clip(magnitude / max_magnitude * 255, 0, 255).astype(np.uint8)
+    hsv[..., 2] = 255
+    hsv[nan_mask, :] = 0
+    return cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
 
 
 def visualize_gt_flow_hsv(flow_uv, max_magnitude= None):
@@ -96,3 +131,15 @@ def visualize_gt_flow_hsv(flow_uv, max_magnitude= None):
     hsv[invalid_mask, :] = 0
     
     return cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
+
+
+def read_input_images(image1_path: Path, 
+                      image2_path: Path, 
+                      gtimage_path: Path,
+                      device: torch.device) -> dict[str, torch.Tensor]:
+    image1 = cv.imread(str(image1_path), cv.IMREAD_GRAYSCALE)
+    image2 = cv.imread(str(image2_path), cv.IMREAD_GRAYSCALE)
+    gtimage = read_flo_file(gtimage_path)
+    return {"image1": np_im_to_torch(uint8_to_float32(image1)).to(device), 
+            "image2": np_im_to_torch(uint8_to_float32(image2)).to(device), 
+            "gtimage": torch.from_numpy(gtimage.astype(np.float32)).to(device)}

@@ -1,6 +1,5 @@
 from utils import *
 
-
 # Helper functions
 def resize_for_pyramid(image, levels):
     height, width = image.shape[:2]
@@ -132,72 +131,55 @@ def coarse_to_fine_optical_flow(
     return cv.resize(flow_uv, original_size[::-1], interpolation=cv.INTER_LINEAR)
 
 
-#Calculate initial flow between 2 images
-def calculate_initial_flow(image1, image2, levels, window_size, alpha, goodness_threshold, use_opencv=False):
-    # If use_opencv is true, use opencv's calcOpticalFlowFarneback to get initial flow
-    if use_opencv:
-        forward_flow = cv.calcOpticalFlowFarneback(image1, image2, None, pyr_scale=0.5, levels=levels, winsize=window_size, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
-        reverse_flow = cv.calcOpticalFlowFarneback(image2, image1, None, pyr_scale=0.5, levels=levels, winsize=window_size, iterations=3, poly_n=5, poly_sigma=1.2, flags=0)
+def calculate_initial_flow(image1, image2, init_params):
+    # TODO: Add other initialization methods from opencv optflow package
+    if init_params.get("init_method", "farneback") == "farneback":
+        forward_flow = cv.calcOpticalFlowFarneback(image1, 
+                                                   image2, 
+                                                   None, 
+                                                   pyr_scale=0.5, 
+                                                   levels=init_params["levels"], 
+                                                   winsize=init_params["window_size"], 
+                                                   iterations=3, 
+                                                   poly_n=5, 
+                                                   poly_sigma=1.2, 
+                                                   flags=0)
+        reverse_flow = cv.calcOpticalFlowFarneback(image2, 
+                                                   image1, 
+                                                   None, 
+                                                   pyr_scale=0.5, 
+                                                   levels=init_params["levels"], 
+                                                   winsize=init_params["window_size"], 
+                                                   iterations=3, 
+                                                   poly_n=5, 
+                                                   poly_sigma=1.2, 
+                                                   flags=0)
     else:  
-        # Calculate the forward optical flow
-        forward_flow = coarse_to_fine_optical_flow(image1, image2, levels, window_size, alpha)
-        # Calculate the reverse optical flow
-        reverse_flow = coarse_to_fine_optical_flow(image2, image1, levels, window_size, alpha)
+        image1 = uint8_to_float32(image1)
+        image2 = uint8_to_float32(image2)
+        forward_flow = coarse_to_fine_optical_flow(image1, 
+                                                   image2, 
+                                                   init_params["levels"], 
+                                                   init_params["window_size"], 
+                                                   init_params["alpha"])
+        reverse_flow = coarse_to_fine_optical_flow(image2, 
+                                                   image1, 
+                                                   init_params["levels"], 
+                                                   init_params["window_size"], 
+                                                   init_params["alpha"])
     # Catch occlusion issues and other bad estimates by checking for places where forward and
     # reverse flow disagre  
-    is_bad_flow_estimate = np.linalg.norm(forward_flow + reverse_flow, axis=2) > goodness_threshold
+    is_bad_flow_estimate = np.linalg.norm(forward_flow + reverse_flow, axis=2) > init_params["goodness_threshold"]
 
-    # Final estimate of the optical flow: average forward and reverse, then set poorly-estimated
-    # regions to nan
     flow = (forward_flow - reverse_flow) / 2
     flow[is_bad_flow_estimate] = np.nan
     return flow
 
-def main():
-    args = process_args()
 
-    flow = calculate_initial_flow(
-        args.image1,
-        args.image2,
-        args.levels,
-        args.window_size,
-        args.alpha,
-        args.goodness_threshold,
-    )
-
-    try:
-        gt_flow = read_flo_file(args.gtimage)
-    except Exception as e:
-        exit(1)
-
-
-    from refine import refine_dense_flow, refine_dense_affine_flow
-
-    if args.use_affine:    
-        flow_refined, I2_warp = refine_dense_affine_flow(
-            args.image1, args.image2, flow, gt_flow,
-            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
-            steps=1000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
-        )
-    else:
-        flow_refined, I2_warp = refine_dense_flow(
-            args.image1, args.image2, flow, gt_flow,
-            # steps=400, lr=0.1, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cpu"
-            steps=1000, lr=0.9, edge_beta=20.0, eps=1e-3, lambda_smooth=0.1, device="cuda"
-        )
-
-    disp = visualize_flow_hsv(flow_refined)
-    cv.imshow("Dense refined flow", disp)
-    cv.imshow("I2 warped", I2_warp)
-
-    display = visualize_flow_hsv(flow)
-    gt_display = visualize_gt_flow_hsv(gt_flow)
-    cv.imshow("Optical flow (custom)", display)
-    cv.imshow("Optical flow (ground truth)", gt_display)
-    cv.imshow("Image1", args.image1)
-    cv.imshow("Image2", args.image2)
-    cv.waitKey(0)
-    cv.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
+def initialize_flow(image1_path, image2_path, init_params):
+    """Return initialized optical flow as torch tensor"""
+    image1 = cv.imread(str(image1_path), cv.IMREAD_GRAYSCALE)
+    image2 = cv.imread(str(image2_path), cv.IMREAD_GRAYSCALE)
+    flow = calculate_initial_flow(image1, image2, init_params)
+    flow = np.nan_to_num(flow.astype(np.float32), nan=0.0)
+    return torch.from_numpy(flow).to(init_params.get("device", "cpu")) 

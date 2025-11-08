@@ -22,6 +22,6 @@ for gt in ./ground_truth_images/*/flow*.flo; do
         echo "  image2: $image2"
         echo "  gt file: $gt"
         
-        python driver.py "$image1" "$image2" "$gt" --use_affine True --log_results True
+        python main.py --image1_path "$image1" --image2_path "$image2" --gtimage_path "$gt"
     fi
 done

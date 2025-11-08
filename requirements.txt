@@ -1,0 +1,6 @@
+jsonargparse
+opencv-python
+numpy
+matplotlib
+mlflow
+torch
