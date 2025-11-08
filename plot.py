@@ -1,7 +1,7 @@
-import ast
 import cv2 as cv
-import numpy as np
 import torch
+from flow import BaseFlow
+import mlflow
 
 from utils import convert_torch_to_cv, visualize_flow_hsv, visualize_gt_flow_hsv
 
@@ -16,6 +16,15 @@ def disp_images(flow_uv, input_images):
     cv.imshow("Optical flow (ground truth)", gt_disp)
     cv.waitKey(0)
     cv.destroyAllWindows()
+
+
+def log_mlflow_artifacts(input_images: dict, flow: BaseFlow):
+    serialized_flow = flow.serialize()
+    torch.save(serialized_flow, "refined_flow_params.pt")
+    mlflow.log_artifact("refined_flow_params.pt", "outputs")
+    input_images_cpu = {k: v.to("cpu").detach() for k, v in input_images.items()}
+    torch.save(input_images_cpu, "log_images.pt")
+    mlflow.log_artifact("log_images.pt", "outputs")
 
 
 if __name__ == "__main__":
@@ -33,23 +42,10 @@ if __name__ == "__main__":
     logged_images = {}
     refined_flow_params = {}
     for artifact in artifacts:
-        if artifact.path.endswith("log_images.json"):
+        if artifact.path.endswith("log_images.pt"):
             local_path = client.download_artifacts(run.info.run_id, artifact.path)
-            import json
-            with open(local_path, 'r') as f:
-                logged_images = json.load(f)
-        elif artifact.path.endswith("refined_flow_params.json"):
+            logged_images = torch.load(local_path)
+        elif artifact.path.endswith("refined_flow_params.pt"):
             local_path = client.download_artifacts(run.info.run_id, artifact.path)
-            import json
-            with open(local_path, 'r') as f:
-                refined_flow_params = json.load(f)
-    # reconstruct tensors from strings
-    for k, v in logged_images.items():
-        if isinstance(v, str):
-            v = ast.literal_eval(v)
-        logged_images[k] = torch.tensor(np.array(v)).unsqueeze(0)
-    for k, v in refined_flow_params.items():
-        if isinstance(v, str):
-            v = ast.literal_eval(v)
-        refined_flow_params[k] = torch.tensor(np.array(v)).unsqueeze(0)
-    disp_images(refined_flow_params["params"], logged_images)
+            refined_flow_params = torch.load(local_path)
+    disp_images(refined_flow_params["uv"], logged_images)

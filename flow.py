@@ -99,10 +99,8 @@ class BaseFlow(ABC):
         """
 
     def warp_image(self, im1: torch.tensor) -> torch.Tensor:
-        #TODO: Abstract this? warped coords could be different for uv and affine cases
         warped_coords_x = self.xs + self.uv[..., 0]
         warped_coords_y = self.ys + self.uv[..., 1]
-
         if im1 is None:
             raise ValueError("Image to warp is None")
         B, C, H, W = im1.shape
@@ -115,11 +113,12 @@ class BaseFlow(ABC):
                              mode="bilinear", 
                              padding_mode="border")
 
-
     def serialize(self):
-        return {"xs": self.xs, 
-                "ys": self.ys, 
-                "params":self.params}
+        # Ensure all tensors are detached and on CPU
+        return {"xs": self.xs.to("cpu").detach(), 
+                "ys": self.ys.to("cpu").detach(),
+                "uv": self.uv.to("cpu").detach(), 
+                "params":self.params.to("cpu").detach()}
     
     def deserialize(self, data):
         self.xs  = data["xs"]

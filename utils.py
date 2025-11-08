@@ -1,10 +1,10 @@
+from pathlib import Path
 import cv2 as cv
 import numpy as np
 import struct
 import torch.nn.functional as F
 
 import torch
-
 
 def _flatten_dict(d: dict, key_sep="_") -> dict:
     """Flattens a nested dictionary."""
@@ -131,3 +131,15 @@ def visualize_gt_flow_hsv(flow_uv, max_magnitude= None):
     hsv[invalid_mask, :] = 0
     
     return cv.cvtColor(hsv, cv.COLOR_HSV2BGR)
+
+
+def read_input_images(image1_path: Path, 
+                      image2_path: Path, 
+                      gtimage_path: Path,
+                      device: torch.device) -> dict[str, torch.Tensor]:
+    image1 = cv.imread(str(image1_path), cv.IMREAD_GRAYSCALE)
+    image2 = cv.imread(str(image2_path), cv.IMREAD_GRAYSCALE)
+    gtimage = read_flo_file(gtimage_path)
+    return {"image1": np_im_to_torch(uint8_to_float32(image1)).to(device), 
+            "image2": np_im_to_torch(uint8_to_float32(image2)).to(device), 
+            "gtimage": torch.from_numpy(gtimage.astype(np.float32)).to(device)}
