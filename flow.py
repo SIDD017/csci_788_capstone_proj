@@ -168,7 +168,7 @@ class Flow6p(BaseFlow):
         flo = torch.zeros(*shape_hw, 6, device=device)
         if initial_flow is not None:
             assert initial_flow.shape == (*shape_hw, 2)
-            flo[..., [2, 5]] = initial_flow
+            flo[..., [2, 5]] = initial_flow.to(device)
         return flo
 
     def named_params(self) -> dict[str, torch.Tensor]:
@@ -234,6 +234,56 @@ class Flow6p(BaseFlow):
             "affine_uv": avg_cost,
         }
 
+class Flow8p(BaseFlow):
+    def init_params(self,
+                    shape_hw: tuple[int, int],
+                    device: torch.device = "cpu",
+                    init_flow: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Initialize the parameters for this 8p flow, using initial_flow if provided."""
+        flo = torch.zeros(*shape_hw, 8, device=device)
+        flo[..., [6, 7]] = torch.stack([self.xs.clone(), self.ys.clone()], dim=-1)
+        if init_flow is not None:
+            assert init_flow.shape == (*shape_hw, 2)
+            flo[..., [2, 5]] = init_flow.to(device)
+        return flo
+        
+    def named_params(self) -> dict[str, torch.Tensor]:
+        """Return named portions of parameters tensor."""
+        return {"uv": self.uv, "affine": self.affine, "local_origin": self.local_origin}
+
+    @property
+    def uv(self):
+        return self.params[..., [2, 5]]
+    
+    @property
+    def affine(self):
+        return self.params[..., [0, 1, 3, 4]].unflatten(-1, (2, 2))
+    
+    @property
+    def local_origin(self):
+        return self.params[..., [6, 7]]
+    
+    def ar0_terms(self, cost_fn) -> dict[str, torch.Tensor]:
+        return {
+            "uv": cost_fn(torch.linalg.norm(self.uv.flatten(start_dim=2), dim=-1)).mean(),
+            "affine": cost_fn(torch.linalg.norm(self.affine.flatten(start_dim=2), dim=-1)).mean(),
+            "local_origin": cost_fn(torch.linalg.norm(self.local_origin.flatten(start_dim=2), dim=-1)).mean(),
+        }
+
+    def ar1_terms(self, win_size, cost_fn) -> dict[str, torch.Tensor]:
+        groups = {
+            "affine": [0, 1, 3, 4],
+            "uv": [2, 5],
+            "local_origin": [6, 7]
+        }
+        tv_terms = {}
+        for key, indices in groups.items():
+            group = self.params[..., indices]
+            dy = group[1:, :, :] - group[:-1, :, :]
+            dx = group[:, 1:, :] - group[:, :-1, :]
+            tv_terms[key] = cost_fn(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
+                            cost_fn(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
+        return tv_terms
 
 class Metrics:
     @staticmethod
