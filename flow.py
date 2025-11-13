@@ -57,7 +57,7 @@ def sliding_window_ar1_helper(t: torch.Tensor, win_size: int, cost_fn):
     avg_cost_per_pixel = gauss_avg(gauss_avg(costs, dim=-1), dim=-1)
     assert avg_cost_per_pixel.shape == (h - win_size + 1, w - win_size + 1)
 
-    return torch.mean(avg_cost_per_pixel)
+    return avg_cost_per_pixel
                           
 
 class BaseFlow(ABC):
@@ -206,8 +206,8 @@ class Flow6p(BaseFlow):
 
     def ar0_terms(self, cost_fn):
         return {
-            "uv": cost_fn(torch.linalg.norm(self.uv.flatten(start_dim=2), dim=-1)).mean(),
-            "b": cost_fn(torch.linalg.norm(self.affine_b.flatten(start_dim=2), dim=-1)).mean(),
+            "uv": cost_fn(torch.linalg.norm(self.uv.flatten(start_dim=2), dim=-1)),
+            "b": cost_fn(torch.linalg.norm(self.affine_b.flatten(start_dim=2), dim=-1)),
         }
 
     def ar1_terms(self, win_size: int, cost_fn):
@@ -224,7 +224,7 @@ class Flow6p(BaseFlow):
         )
         costs = cost_fn(norm_diff)
         avg_cost_per_pixel = gauss_avg(gauss_avg(costs, dim=-1), dim=-1)
-        avg_cost = torch.mean(avg_cost_per_pixel)
+        avg_cost = avg_cost_per_pixel
 
         # We now have 3 AR1 terms; return all of them so we can decide later which turn out to be
         # useful

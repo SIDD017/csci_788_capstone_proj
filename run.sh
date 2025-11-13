@@ -22,6 +22,6 @@ for gt in ./ground_truth_images/*/flow*.flo; do
         echo "  image2: $image2"
         echo "  gt file: $gt"
         
-        python main.py --image1_path "$image1" --image2_path "$image2" --gtimage_path "$gt"
+        python main.py --image1_path "$image1" --image2_path "$image2" --gtimage_path "$gt" --experiment_name "refine_experiment" --run_name "run_$folder"
     fi
 done
