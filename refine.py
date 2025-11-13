@@ -55,28 +55,71 @@ def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params:
     lambda_ar1_affine = refine_params.get("lambda_ar1_affine", 0.1)
     lambda_ar1_affine_uv = refine_params.get("lambda_ar1_affine_uv", 0.1)
 
-    # Edge downweighting
-    edge_beta = refine_params.get("edge_beta", 20.0)
-
-    eps = refine_params.get("eps", 1e-3)
-    
-    w_edge = 1.0 / (1.0 + edge_beta * sobel_magnitude(input_images["image1"]))
-    w_edge = w_edge.detach()
+    # Loss function parameters
+    data_alpha = refine_params.get("data_alpha", 1.0)
+    data_c = refine_params.get("data_c", 1e-3)
+    ar0_alpha = refine_params.get("ar0_alpha", 1.0)
+    ar0_c = refine_params.get("ar0_c", 1e-3)
+    ar1_alpha = refine_params.get("ar1_alpha", 1.0)
+    ar1_c = refine_params.get("ar1_c", 1e-3)
 
     opt = torch.optim.Adam([flow.params], lr=refine_params.get("lr", 1e-1))
+
+    # Create loss functions with specific parameters
+    data_loss_fn = lambda x: barron_loss(x, alpha=data_alpha, c=data_c)
+    ar0_loss_fn = lambda x: barron_loss(x, alpha=ar0_alpha, c=ar0_c)
+    ar1_loss_fn = lambda x: barron_loss(x, alpha=ar1_alpha, c=ar1_c)
 
     for t in range(refine_params.get("steps", 1000)):
         opt.zero_grad()
         I2w = flow.warp_image(input_images["image2"])
         resid = I2w - input_images["image1"]
 
-        data = (charbonnier_loss(resid, eps=eps) * w_edge).mean()
+        data = (data_loss_fn(resid)).mean()
 
-        ar0 = flow.ar0_terms(charbonnier_loss)
+        ar0 = flow.ar0_terms(ar0_loss_fn)
         ar0_weighted = lambda_ar0_uv * ar0["uv"] + lambda_ar0_affine * ar0["b"]
         ar0_weighted = ar0_weighted.mean()
-        
-        ar1 = flow.ar1_terms(3, charbonnier_loss)
+
+        ar1 = flow.ar1_terms(3, ar1_loss_fn)
+        ar1_weighted = lambda_ar1_uv * ar1["uv"] + lambda_ar1_affine * ar1["b"] + lambda_ar1_affine_uv * ar1["affine_uv"]
+        ar1_weighted = ar1_weighted.mean()
+
+        loss = data + ar1_weighted + ar0_weighted
+        loss.backward()
+        opt.step()
+
+        if (t % 50 == 0):
+            print("\nIteration : ", t)
+            print(loss.item())
+            with torch.no_grad():
+                log_metrics["data_log"].append(data.item())
+                log_metrics["ar0_log"].append(ar0_weighted.item())
+                log_metrics["ar1_log"].append(ar1_weighted.item())
+                log_metrics["loss_log"].append(loss.item())
+                log_metrics["epe_log"].append(Metrics.epe(input_images["gtimage"], flow.uv))
+                log_metrics["angular_log"].append(Metrics.angular_error(input_images["gtimage"], flow.uv))
+                print("epe : ", log_metrics["epe_log"][-1])
+                print("ang error : ", log_metrics["angular_log"][-1])
+            mlflow.log_metrics({k: lst[-1] for k, lst in log_metrics.items()}, step=t)
+
+    # Create loss functions with specific parameters
+    data_loss_fn = lambda x: barron_loss(x, alpha=-100, c=data_c)
+    ar0_loss_fn = lambda x: barron_loss(x, alpha=-100, c=ar0_c)
+    ar1_loss_fn = lambda x: barron_loss(x, alpha=-100, c=ar1_c)
+
+    for t in range(refine_params.get("steps", 1000), refine_params.get("steps", 1000) * 2):
+        opt.zero_grad()
+        I2w = flow.warp_image(input_images["image2"])
+        resid = I2w - input_images["image1"]
+
+        data = (data_loss_fn(resid)).mean()
+
+        ar0 = flow.ar0_terms(ar0_loss_fn)
+        ar0_weighted = lambda_ar0_uv * ar0["uv"] + lambda_ar0_affine * ar0["b"]
+        ar0_weighted = ar0_weighted.mean()
+
+        ar1 = flow.ar1_terms(3, ar1_loss_fn)
         ar1_weighted = lambda_ar1_uv * ar1["uv"] + lambda_ar1_affine * ar1["b"] + lambda_ar1_affine_uv * ar1["affine_uv"]
         ar1_weighted = ar1_weighted.mean()
 
