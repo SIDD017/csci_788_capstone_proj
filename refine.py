@@ -56,28 +56,45 @@ def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params:
     lambda_ar1_affine_uv = refine_params.get("lambda_ar1_affine_uv", 0.1)
 
     # Edge downweighting
-    edge_beta = refine_params.get("edge_beta", 20.0)
+    edge_beta_data = refine_params.get("edge_beta_data", 20.0)
+    edge_beta_ar1_uv = refine_params.get("edge_beta_ar1_uv", 20.0)
+    edge_beta_ar1_affine = refine_params.get("edge_beta_ar1_affine", 20.0)
+    edge_beta_ar1_affine_uv = refine_params.get("edge_beta_ar1_affine_uv", 20.0)
+    # Compute edge weights
+    w_edge_data = 1.0 / (1.0 + edge_beta_data * sobel_magnitude(input_images["image1"]))
+    w_edge_ar1_uv = 1.0 / (1.0 + edge_beta_ar1_uv * sobel_magnitude(input_images["image1"]))
+    w_edge_ar1_affine = 1.0 / (1.0 + edge_beta_ar1_affine * sobel_magnitude(input_images["image1"]))
+    w_edge_ar1_affine_uv = 1.0 / (1.0 + edge_beta_ar1_affine_uv * sobel_magnitude(input_images["image1"]))
+    w_edge_data = w_edge_data.detach()
+    w_edge_ar1_uv = w_edge_ar1_uv.detach()
+    w_edge_ar1_affine = w_edge_ar1_affine.detach()
+    w_edge_ar1_affine_uv = w_edge_ar1_affine_uv.detach()
 
-    eps = refine_params.get("eps", 1e-3)
-    
-    w_edge = 1.0 / (1.0 + edge_beta * sobel_magnitude(input_images["image1"]))
-    w_edge = w_edge.detach()
+    eps_data = refine_params.get("eps_data", 1e-3)
+    eps_ar1 = refine_params.get("eps_ar1", 1e-3)
+    eps_ar0 = refine_params.get("eps_ar0", 1e-3)
 
     opt = torch.optim.Adam([flow.params], lr=refine_params.get("lr", 1e-1))
+
+    # Create loss functions with specific parameters
+    data_loss_fn = lambda x: charbonnier_loss(x, eps=eps_data)
+    ar0_loss_fn = lambda x: charbonnier_loss(x, eps=eps_ar0)
+    ar1_loss_fn = lambda x: charbonnier_loss(x, eps=eps_ar1)
 
     for t in range(refine_params.get("steps", 1000)):
         opt.zero_grad()
         I2w = flow.warp_image(input_images["image2"])
         resid = I2w - input_images["image1"]
 
-        data = (charbonnier_loss(resid, eps=eps) * w_edge).mean()
+        data = (data_loss_fn(resid) * w_edge_data).mean()
 
-        ar0 = flow.ar0_terms(charbonnier_loss)
+        ar0 = flow.ar0_terms(ar0_loss_fn)
         ar0_weighted = lambda_ar0_uv * ar0["uv"] + lambda_ar0_affine * ar0["b"]
         ar0_weighted = ar0_weighted.mean()
-        
-        ar1 = flow.ar1_terms(3, charbonnier_loss)
-        ar1_weighted = lambda_ar1_uv * ar1["uv"] + lambda_ar1_affine * ar1["b"] + lambda_ar1_affine_uv * ar1["affine_uv"]
+
+        ar1 = flow.ar1_terms(3, ar1_loss_fn)
+        print(ar1["uv"].shape, w_edge_ar1_uv.shape)
+        ar1_weighted = w_edge_ar1_uv * lambda_ar1_uv * ar1["uv"] + w_edge_ar1_affine * lambda_ar1_affine * ar1["b"] + w_edge_ar1_affine_uv * lambda_ar1_affine_uv * ar1["affine_uv"]
         ar1_weighted = ar1_weighted.mean()
 
         loss = data + ar1_weighted + ar0_weighted

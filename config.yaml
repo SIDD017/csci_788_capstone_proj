@@ -1,0 +1,33 @@
+# Available models: "translation", "affine", "affine_with_local_origins"
+# Available init_methods: "farneback", "custom_lucas_kanade"
+init_params:
+    levels: 5
+    window_size: 7
+    alpha: 1e-3
+    goodness_threshold: 2.0
+    device: "cuda"
+    model: "translation"
+    init_method: "farneback"
+
+refine_params:
+    steps: 10000
+    lr: 1e-1
+
+    # Robust loss epsilons
+    eps_data: 1e-3
+    eps_ar1: 1e-3
+    eps_ar0: 1e-3
+    # Edge downweighting
+    edge_beta_data: 20.0
+    edge_beta_ar1_uv: 20.0
+    edge_beta_ar1_affine: 20.0
+    edge_beta_ar1_affine_uv: 20.0
+
+    # AR0 weights (magnitude penalties)
+    lambda_ar0_uv: 0.0001
+    lambda_ar0_affine: 0.0001
+    
+    # AR1 weights (smoothness penalties)
+    lambda_ar1_uv: 0.1
+    lambda_ar1_affine: 0.1
+    lambda_ar1_affine_uv: 0.1
