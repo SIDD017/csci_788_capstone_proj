@@ -4,7 +4,7 @@ from pathlib import Path
 import mlflow
 
 from plot import disp_images, log_mlflow_artifacts
-from refine import refine, grid_search
+from refine import refine
 from utils import read_input_images, _flatten_dict
 
 def check_exisitng_runs(exp_name: str, run_name: str) -> bool:
@@ -29,10 +29,10 @@ def run_pipeline(init_params: dict,
                                      gtimage_path, 
                                      init_params["device"])
     init_flow = initialize_flow(image1_path, image2_path, init_params)
-    flow = Flow6p(input_images["image1"].shape[-2:], 
+    flow = Flow2p(input_images["image1"].shape[-2:], 
                   device=init_params["device"], 
                   init_flow=init_flow)
-    grid_search(flow, input_images, refine_params)
+    refine(flow, input_images, refine_params)
     log_mlflow_artifacts(input_images, flow)
     disp_images(flow.uv, input_images)
 

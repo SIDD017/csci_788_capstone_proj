@@ -3,6 +3,7 @@ import jsonargparse
 import torch
 from flow import BaseFlow
 import mlflow
+import matplotlib.pyplot as plt
 
 from utils import convert_torch_to_cv, visualize_flow_hsv, visualize_gt_flow_hsv
 
@@ -74,4 +75,11 @@ if __name__ == "__main__":
     run_name = args.run_name
     logged_images, refined_flow_params = get_mlfow_run_artifacts(exp_name, 
                                                                  run_name)
+    affine_aprams = refined_flow_params["params"][..., [0, 1, 3, 4]]
+    temp = torch.linalg.norm(affine_aprams, dim=-1)
+    plt.imshow(temp.cpu().numpy())
+    plt.title("Affine params magnitude")
+    plt.colorbar()
+    plt.show()
+
     disp_images(refined_flow_params["uv"], logged_images)
