@@ -16,20 +16,47 @@ refine_params:
     # AR0 weights (magnitude penalties)
     lambda_ar0_uv: 1e-9
     lambda_ar0_affine: 1e-6
+    lambda_ar0_local_origin: 1e-6
     
     # AR1 weights (smoothness penalties)
-    lambda_ar1_uv: 0.05
-    lambda_ar1_affine: 1
-    lambda_ar1_affine_uv: 0.05
+    lambda_ar1_uv: 0.1
+    lambda_ar1_affine: 0.1
+    lambda_ar1_affine_uv: 0.1
+    lambda_ar1_local_origin: 0.1
     
     # Data term robust loss
-    data_alpha: -0.5
-    data_c: 0.05
+    data_alpha: 1.0
+    data_c: 1e-3
     
     # AR0 terms robust loss
-    ar0_alpha: 0.5
-    ar0_c: 0.5
+    ar0_alpha: 1.0
+    ar0_c: 1e-3
 
     # AR1 terms robust loss
-    ar1_alpha: 1
-    ar1_c: 0.1
+    ar1_alpha: 1.0
+    ar1_c: 1e-3
+
+
+    # steps: 10000
+    # lr: 1e-1
+    
+    # # AR0 weights (magnitude penalties)
+    # lambda_ar0_uv: 1e-9
+    # lambda_ar0_affine: 1e-6
+    
+    # # AR1 weights (smoothness penalties)
+    # lambda_ar1_uv: 0.05
+    # lambda_ar1_affine: 1
+    # lambda_ar1_affine_uv: 0.05
+    
+    # # Data term robust loss
+    # data_alpha: -0.5
+    # data_c: 0.05
+    
+    # # AR0 terms robust loss
+    # ar0_alpha: 0.5
+    # ar0_c: 0.5
+
+    # # AR1 terms robust loss
+    # ar1_alpha: 1
+    # ar1_c: 0.1

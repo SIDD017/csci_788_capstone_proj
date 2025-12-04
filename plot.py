@@ -65,6 +65,16 @@ def get_mlfow_run_artifacts(exp_name: str, run_name: str):
     return logged_images, refined_flow_params
 
 
+def disp_6p_affine_heatmap(refined_flow_params):
+    """Display heatmap of 6-parameter affine flow params."""
+    affine_aprams = refined_flow_params["params"][..., [0, 1, 3, 4]]
+    temp = torch.linalg.norm(affine_aprams, dim=-1)
+    plt.imshow(temp.cpu().numpy())
+    plt.title("Affine params magnitude")
+    plt.colorbar()
+    plt.show()
+
+
 if __name__ == "__main__":
     """Given an exp name,get latest run and load in the logged images and display them"""
     parser = jsonargparse.ArgumentParser(description="Display logged mlflow images")
@@ -75,11 +85,6 @@ if __name__ == "__main__":
     run_name = args.run_name
     logged_images, refined_flow_params = get_mlfow_run_artifacts(exp_name, 
                                                                  run_name)
-    affine_aprams = refined_flow_params["params"][..., [0, 1, 3, 4]]
-    temp = torch.linalg.norm(affine_aprams, dim=-1)
-    plt.imshow(temp.cpu().numpy())
-    plt.title("Affine params magnitude")
-    plt.colorbar()
-    plt.show()
+    disp_6p_affine_heatmap(refined_flow_params)
 
     disp_images(refined_flow_params["uv"], logged_images)

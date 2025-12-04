@@ -1,7 +1,7 @@
 export PYTHONIOENCODING=UTF-8
 
 experiments=(
-    "2paramposter"
+    "8param_final_results"
 )
 
 echo "Starting batch experiments..."
@@ -28,7 +28,7 @@ for exp_name in "${experiments[@]}"; do
             echo "  image2: $image2"
             echo "  gt file: $gt"
             
-            python main.py --image1_path "$image1" --image2_path "$image2" --gtimage_path "$gt" --experiment_name "$exp_name" --run_name "$folder"
+            python main.py --image1_path "$image1" --image2_path "$image2" --gtimage_path "$gt" --exp_name "$exp_name" --run_name "$folder"
         fi
     done
 done

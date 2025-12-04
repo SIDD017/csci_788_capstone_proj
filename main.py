@@ -29,7 +29,7 @@ def run_pipeline(init_params: dict,
                                      gtimage_path, 
                                      init_params["device"])
     init_flow = initialize_flow(image1_path, image2_path, init_params)
-    flow = Flow2p(input_images["image1"].shape[-2:], 
+    flow = Flow8p(input_images["image1"].shape[-2:], 
                   device=init_params["device"], 
                   init_flow=init_flow)
     refine(flow, input_images, refine_params)

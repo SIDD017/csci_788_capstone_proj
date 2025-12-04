@@ -133,13 +133,9 @@ def grid_search(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_pa
     
     mlflow.log_params({f"best_{k}": v for k, v in best_params.items()})
     mlflow.log_metric("best_grid_search_epe", best_epe)
-    
-    # Use best parameters for final run
-    # refine_params.update(best_params)
-    # print(refine_params)
-    
-    # # Run final refinement (or single run if no grid search)
-    # return _refine_single_run(flow, input_images, refine_params)
+
+    refine_params.update(best_params)
+    print(refine_params)
 
 
 def run_pipeline(init_params: dict,

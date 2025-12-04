@@ -42,6 +42,35 @@ def sobel_magnitude(t):
     gy = F.conv2d(t, ky, padding=1)
     return torch.sqrt(gx*gx + gy*gy)
 
+def get_ar0_weighted(ar0, refine_params):
+    ar0_weighted = 0
+    for k, v in ar0.items():
+        if k == "uv":
+            ar0_weighted += v * refine_params.get("lambda_ar0_uv", 0.0001)
+        elif k == "b":
+            ar0_weighted += v * refine_params.get("lambda_ar0_affine", 0.0001)
+        elif k == "affine":
+            ar0_weighted += v * refine_params.get("lambda_ar0_affine", 0.0001)
+        elif k == "local_origin":
+            ar0_weighted += v * refine_params.get("lambda_ar0_local_origin", 0.0001)
+    return ar0_weighted.mean()
+
+
+def get_ar1_weighted(ar1, refine_params):
+    ar1_weighted = 0
+    for k, v in ar1.items():
+        if k == "uv":
+            ar1_weighted += v * refine_params.get("lambda_ar1_uv", 0.1)
+        elif k == "b":
+            ar1_weighted += v * refine_params.get("lambda_ar1_affine", 0.1)
+        elif k == "affine_uv":
+            ar1_weighted += v * refine_params.get("lambda_ar1_affine_uv", 0.1)
+        elif k == "affine":
+            ar1_weighted += v * refine_params.get("lambda_ar1_affine", 0.1)
+        elif k == "local_origin":
+            ar1_weighted += v * refine_params.get("lambda_ar1_local_origin", 0.1)
+    return ar1_weighted.mean()
+
 
 def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params: dict):
     log_metrics = init_log_metrics()
@@ -70,20 +99,22 @@ def refine(flow: BaseFlow, input_images: dict[str, torch.Tensor], refine_params:
     ar0_loss_fn = lambda x: barron_loss(x, alpha=ar0_alpha, c=ar0_c)
     ar1_loss_fn = lambda x: barron_loss(x, alpha=ar1_alpha, c=ar1_c)
 
+    w_edge = 1.0 / (1.0 + refine_params.get("edge_beta", 20.0) * sobel_magnitude(input_images["image1"]))
+    w_edge = w_edge.detach()
+
     for t in range(refine_params.get("steps", 1000)):
         opt.zero_grad()
         I2w = flow.warp_image(input_images["image2"])
         resid = I2w - input_images["image1"]
-
-        data = (data_loss_fn(resid)).mean()
+        data = (data_loss_fn(resid) * w_edge).mean()
 
         ar0 = flow.ar0_terms(ar0_loss_fn)
-        ar0_weighted = lambda_ar0_uv * ar0["uv"] + lambda_ar0_affine * ar0["b"]
-        ar0_weighted = ar0_weighted.mean()
+        # ar0_weighted = lambda_ar0_uv * ar0["uv"] + lambda_ar0_affine * ar0["b"]
+        ar0_weighted = get_ar0_weighted(ar0, refine_params)
 
         ar1 = flow.ar1_terms(3, ar1_loss_fn)
-        ar1_weighted = lambda_ar1_uv * ar1["uv"] + lambda_ar1_affine * ar1["b"] + lambda_ar1_affine_uv * ar1["affine_uv"]
-        ar1_weighted = ar1_weighted.mean()
+        # ar1_weighted = lambda_ar1_uv * ar1["uv"] + lambda_ar1_affine * ar1["b"] + lambda_ar1_affine_uv * ar1["affine_uv"]
+        ar1_weighted = get_ar1_weighted(ar1, refine_params)
 
         loss = data + ar1_weighted + ar0_weighted
         loss.backward()

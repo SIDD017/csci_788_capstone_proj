@@ -276,13 +276,16 @@ class Flow8p(BaseFlow):
             "uv": [2, 5],
             "local_origin": [6, 7]
         }
+        # return {"uv": sliding_window_ar1_helper(self.uv, win_size, cost_fn),
+        #         "affine": sliding_window_ar1_helper(self.affine, win_size, cost_fn),
+        #         "local_origin": sliding_window_ar1_helper(self.local_origin, win_size, cost_fn)}
         tv_terms = {}
         for key, indices in groups.items():
             group = self.params[..., indices]
             dy = group[1:, :, :] - group[:-1, :, :]
             dx = group[:, 1:, :] - group[:, :-1, :]
-            tv_terms[key] = cost_fn(torch.linalg.norm(dy, dim=-1), 1e-3).mean() + \
-                            cost_fn(torch.linalg.norm(dx, dim=-1), 1e-3).mean()
+            tv_terms[key] = cost_fn(torch.linalg.norm(dy, dim=-1)).mean() + \
+                            cost_fn(torch.linalg.norm(dx, dim=-1)).mean()
         return tv_terms
 
 class Metrics:
